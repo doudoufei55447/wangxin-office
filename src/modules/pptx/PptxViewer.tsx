@@ -231,68 +231,70 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
         <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>{page + 1} / {slides.length}</span>
         <button className="icon-btn" onClick={() => setPage((p) => Math.min(slides.length - 1, p + 1))}><ChevronRight size={18} /></button>
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: 24, background: "var(--muted)", display: "flex", justifyContent: "center" }}>
-        <div
-          ref={stageRef}
-          onClick={addNote}
-          style={{ width: "100%", maxWidth: 960, position: "relative", cursor: "crosshair", boxShadow: "var(--shadow)", background: slide?.bgColor }}
-        >
-          {loading && <div style={{ padding: 24, color: "var(--muted-fg)" }}>正在解析演示文稿…</div>}
-          {slide && (
-            <svg viewBox={`0 0 ${slide.W} ${slide.H}`} style={{ width: "100%", display: "block", background: slide.bgColor }}>
-              {slide.shapes.map((s, i) =>
-                s.isPic ? (
-                  <image key={i} x={s.x} y={s.y} width={s.cx} height={s.cy} href={s.img} preserveAspectRatio="none" />
-                ) : (
-                  <foreignObject key={i} x={s.x} y={s.y} width={s.cx} height={s.cy}>
-                    <div
-                      xmlns="http://www.w3.org/1999/xhtml"
-                      style={{
-                        width: "100%", height: "100%", boxSizing: "border-box",
-                        display: "flex", flexDirection: "column", justifyContent: "center",
-                        padding: "2%", overflow: "hidden",
-                        color: s.color, fontWeight: s.bold ? 700 : 400,
-                        fontSize: (s.fontSize / 100) * 12700, lineHeight: 1.2,
-                        textAlign: s.align, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif",
-                        whiteSpace: "pre-wrap", wordBreak: "break-word",
-                      }}
-                      dangerouslySetInnerHTML={{ __html: s.textHtml }}
-                    />
-                  </foreignObject>
-                )
-              )}
-            </svg>
-          )}
-          {notes.filter((n) => n.page === page).map((n, i) => (
-            <div
-              key={i}
-              style={{ position: "absolute", left: `${n.x * 100}%`, top: `${n.y * 100}%`, background: "#2E5BF0", color: "#fff", borderRadius: 12, padding: "2px 8px", fontSize: 11, maxWidth: 180, transform: "translate(-50%,-50%)", pointerEvents: "none" }}
-            >
-              {n.text}
-            </div>
-          ))}
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <div style={{ flex: 1, minWidth: 0, position: "relative", overflowY: "auto", padding: 24, background: "var(--muted)", display: "flex", justifyContent: "center" }}>
+          <div
+            ref={stageRef}
+            onClick={addNote}
+            style={{ width: "100%", maxWidth: 960, height: "fit-content", position: "relative", cursor: "crosshair", boxShadow: "var(--shadow)", background: slide?.bgColor }}
+          >
+            {loading && <div style={{ padding: 24, color: "var(--muted-fg)" }}>正在解析演示文稿…</div>}
+            {slide && (
+              <svg viewBox={`0 0 ${slide.W} ${slide.H}`} style={{ width: "100%", display: "block", background: slide.bgColor }}>
+                {slide.shapes.map((s, i) =>
+                  s.isPic ? (
+                    <image key={i} x={s.x} y={s.y} width={s.cx} height={s.cy} href={s.img} preserveAspectRatio="none" />
+                  ) : (
+                    <foreignObject key={i} x={s.x} y={s.y} width={s.cx} height={s.cy}>
+                      <div
+                        xmlns="http://www.w3.org/1999/xhtml"
+                        style={{
+                          width: "100%", height: "100%", boxSizing: "border-box",
+                          display: "flex", flexDirection: "column", justifyContent: "center",
+                          padding: "2%", overflow: "hidden",
+                          color: s.color, fontWeight: s.bold ? 700 : 400,
+                          fontSize: (s.fontSize / 100) * 12700, lineHeight: 1.2,
+                          textAlign: s.align, fontFamily: "PingFang SC, Microsoft YaHei, sans-serif",
+                          whiteSpace: "pre-wrap", wordBreak: "break-word",
+                        }}
+                        dangerouslySetInnerHTML={{ __html: s.textHtml }}
+                      />
+                    </foreignObject>
+                  )
+                )}
+              </svg>
+            )}
+            {notes.filter((n) => n.page === page).map((n, i) => (
+              <div
+                key={i}
+                style={{ position: "absolute", left: `${n.x * 100}%`, top: `${n.y * 100}%`, background: "#2E5BF0", color: "#fff", borderRadius: 12, padding: "2px 8px", fontSize: 11, maxWidth: 180, transform: "translate(-50%,-50%)", pointerEvents: "none" }}
+              >
+                {n.text}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
-      {/* 文本替换面板 */}
-      <div style={{ width: 320, flexShrink: 0, background: "var(--card)", borderLeft: "1px solid var(--border)", padding: 12, overflowY: "auto" }}>
-        <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>文本替换（第 {page + 1} 页 · 共 {slide?.runs.length ?? 0} 段）</div>
-        {slide?.runs.map((t, i) => (
-          <textarea
-            key={i}
-            value={t}
-            onChange={(e) => {
-              const v = e.target.value;
-              setSlides((prev) => {
-                const next = prev.slice();
-                next[page] = { ...next[page], runs: next[page].runs.map((r, j) => (j === i ? v : r)) };
-                return next;
-              });
-            }}
-            rows={2}
-            style={{ width: "100%", marginBottom: 8, background: "var(--muted)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 6, padding: 6, font: "inherit", resize: "vertical" }}
-          />
-        ))}
-        {(!slide || slide.runs.length === 0) && <div style={{ fontSize: 12, color: "var(--muted-fg)", display: "flex", gap: 4 }}><ImageIcon size={14} /> 本页无文本（仅图片）</div>}
+        {/* 文本替换面板：右侧固定宽度、独立滚动，不参与挤压画布 */}
+        <div style={{ width: 320, flexShrink: 0, background: "var(--card)", borderLeft: "1px solid var(--border)", padding: 12, overflowY: "auto" }}>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>文本替换（第 {page + 1} 页 · 共 {slide?.runs.length ?? 0} 段）</div>
+          {slide?.runs.map((t, i) => (
+            <textarea
+              key={i}
+              value={t}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSlides((prev) => {
+                  const next = prev.slice();
+                  next[page] = { ...next[page], runs: next[page].runs.map((r, j) => (j === i ? v : r)) };
+                  return next;
+                });
+              }}
+              rows={2}
+              style={{ width: "100%", marginBottom: 8, background: "var(--muted)", color: "var(--fg)", border: "1px solid var(--border)", borderRadius: 6, padding: 6, font: "inherit", resize: "vertical" }}
+            />
+          ))}
+          {(!slide || slide.runs.length === 0) && <div style={{ fontSize: 12, color: "var(--muted-fg)", display: "flex", gap: 4 }}><ImageIcon size={14} /> 本页无文本（仅图片）</div>}
+        </div>
       </div>
       {notePrompt && (
         <InlinePrompt
