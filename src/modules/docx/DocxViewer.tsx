@@ -25,6 +25,20 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
         const { value, messages } = await mammoth.convertToHtml({ arrayBuffer: file.buffer.slice(0) });
         if (editorRef.current) {
           editorRef.current.innerHTML = value;
+          // mammoth 输出的 <img> 无宽高属性，浏览器按原始像素渲染会溢出页面卡片；
+          // 宽度约束由下方 .wx-docx-editor img 样式统一处理。
+          // 另对浏览器无法解码的图片（EMF/WMF 矢量图等）降级为友好占位提示。
+          editorRef.current.querySelectorAll("img").forEach((img) => {
+            img.onerror = () => {
+              const ph = document.createElement("div");
+              ph.textContent = "该图片格式暂不支持预览（如 EMF/WMF 矢量图），正文内容不受影响";
+              ph.setAttribute(
+                "style",
+                "padding:12px;border:1px dashed #d9a300;border-radius:6px;color:#8a6d1a;font-size:13px;margin:8px 0;background:rgba(217,163,0,0.06)"
+              );
+              img.replaceWith(ph);
+            };
+          });
         }
         if (messages.length) setNote(`部分样式/元素未保留（如复杂表格、页眉页脚），属 MVP 已知边界。`);
       } catch (e) {
@@ -48,6 +62,8 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+      {/* 约束文档内图片宽度：不超出页面卡片，等比缩放（修复大图横向溢出截断） */}
+      <style>{".wx-docx-editor img{max-width:100%;height:auto;border-radius:4px;}"}</style>
       <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 12px", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
         <button className="btn primary" disabled={saving} onClick={handleSave}>
           <Save size={16} /> {saving ? "保存中…" : "保存 / 另存为 docx"}
@@ -58,6 +74,7 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
         {/* 编辑器容器：React 不渲染任何子节点（避免 innerHTML 与 React 协调器冲突导致整窗白屏） */}
         <div
           ref={editorRef}
+          className="wx-docx-editor"
           contentEditable
           suppressContentEditableWarning
           style={{
