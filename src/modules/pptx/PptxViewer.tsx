@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { Save, MessageSquare, ChevronLeft, ChevronRight, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
+import { InlinePrompt } from "../../components/InlinePrompt";
 import type { OpenedFile } from "../../platform";
 
 interface Shape {
@@ -144,6 +145,7 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
   const [notes, setNotes] = useState<{ page: number; x: number; y: number; text: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [notePrompt, setNotePrompt] = useState<null | { x: number; y: number; nx: number; ny: number }>(null);
   const zipRef = useRef<JSZip | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
 
@@ -173,10 +175,14 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
   }, [file]);
 
   function addNote(e: React.MouseEvent) {
-    const text = window.prompt("批注内容（PPT 批注为会话内显示，不写回文件）：");
-    if (!text) return;
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setNotes((n) => [...n, { page, x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height, text }]);
+    const isStage = e.currentTarget === stageRef.current;
+    setNotePrompt({
+      x: e.clientX,
+      y: e.clientY,
+      nx: isStage ? (e.clientX - rect.left) / rect.width : 0.5,
+      ny: isStage ? (e.clientY - rect.top) / rect.height : 0.15,
+    });
   }
 
   // 受限文本替换：把编辑后的 runs 按文档顺序写回对应 slide 的 <a:t>
@@ -288,6 +294,18 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
         ))}
         {(!slide || slide.runs.length === 0) && <div style={{ fontSize: 12, color: "var(--muted-fg)", display: "flex", gap: 4 }}><ImageIcon size={14} /> 本页无文本（仅图片）</div>}
       </div>
+      {notePrompt && (
+        <InlinePrompt
+          x={notePrompt.x}
+          y={notePrompt.y}
+          placeholder="批注内容（会话内显示）"
+          onOk={(text) => {
+            setNotes((n) => [...n, { page, x: notePrompt.nx, y: notePrompt.ny, text }]);
+            setNotePrompt(null);
+          }}
+          onCancel={() => setNotePrompt(null)}
+        />
+      )}
     </div>
   );
 }

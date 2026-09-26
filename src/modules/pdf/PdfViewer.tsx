@@ -6,6 +6,7 @@ import { PDFDocument } from "pdf-lib";
 import { Highlighter, MessageSquare, Pen, Download, Save } from "lucide-react";
 import { saveFileDialog } from "../../platform";
 import type { OpenedFile } from "../../platform";
+import { InlinePrompt } from "../../components/InlinePrompt";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -23,6 +24,7 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
   const [saving, setSaving] = useState(false);
+  const [commentPrompt, setCommentPrompt] = useState<null | { page: number; x: number; y: number; nx: number; ny: number }>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   // mode 的镜像 ref：bindOverlay 绑定的事件闭包必须读到最新值，否则批注工具全部失效
   const modeRef = useRef<Mode>("none");
@@ -100,8 +102,7 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
       if (modeRef.current === "highlight") {
         drawRef.current = { page, startX: p.x, startY: p.y, points: [] };
       } else if (modeRef.current === "comment") {
-        const text = window.prompt("批注内容：");
-        if (text) setAnns((a) => [...a, { type: "comment", page, x: p.x, y: p.y, text }]);
+        setCommentPrompt({ page, x: e.clientX, y: e.clientY, nx: p.x, ny: p.y });
         setMode("none");
       } else if (modeRef.current === "freehand") {
         drawRef.current = { page, startX: p.x, startY: p.y, points: [p] };
@@ -255,6 +256,18 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
           <div style={{ position: "absolute", top: 24, left: 0, right: 0, padding: "0 24px", textAlign: "center", color: "var(--warning)", fontSize: 13 }}>
             {error}
           </div>
+        )}
+        {commentPrompt && (
+          <InlinePrompt
+            x={commentPrompt.x}
+            y={commentPrompt.y}
+            placeholder="批注内容（Enter 确定）"
+            onOk={(text) => {
+              setAnns((a) => [...a, { type: "comment", page: commentPrompt.page, x: commentPrompt.nx, y: commentPrompt.ny, text }]);
+              setCommentPrompt(null);
+            }}
+            onCancel={() => setCommentPrompt(null)}
+          />
         )}
       </div>
     </div>

@@ -18,7 +18,7 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
       try {
         if (isLegacyBinaryFormat(file.buffer)) {
           setNote(
-            "这是旧版 Word 97-2003 二进制格式（.doc）或 WPS 以 docx 后缀保存的旧格式，本版本暂不支持。请用 Word/WPS 打开后「另存为 .docx」再打开（旧版 .doc 引擎计划二期支持）。"
+            "解析失败：这是旧版 Word 97-2003 二进制格式（.doc）或 WPS 以 docx 后缀保存的旧格式，本版本暂不支持。请用 Word/WPS 打开后「另存为 .docx」再打开（旧版 .doc 引擎计划二期支持）。"
           );
           return;
         }
@@ -29,8 +29,7 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
         if (messages.length) setNote(`部分样式/元素未保留（如复杂表格、页眉页脚），属 MVP 已知边界。`);
       } catch (e) {
         setNote("解析失败：" + (e as Error).message);
-      } finally {
-        setLoading(false);
+      } finally {        setLoading(false);
       }
     })();
   }, [file]);
@@ -55,7 +54,8 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
         </button>
         {note && <span style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12, color: "var(--warning)" }}><FileWarning size={14} />{note}</span>}
       </div>
-      <div style={{ flex: 1, overflowY: "auto", padding: 24, background: "var(--muted)" }}>
+      <div style={{ flex: 1, position: "relative", overflowY: "auto", padding: 24, background: "var(--muted)" }}>
+        {/* 编辑器容器：React 不渲染任何子节点（避免 innerHTML 与 React 协调器冲突导致整窗白屏） */}
         <div
           ref={editorRef}
           contentEditable
@@ -71,9 +71,17 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
             outline: "none",
             lineHeight: 1.8,
           }}
-        >
-          {loading && <span style={{ color: "var(--muted-fg)" }}>正在解析文档…</span>}
-        </div>
+        />
+        {loading && (
+          <div style={{ position: "absolute", top: 32, left: 0, right: 0, textAlign: "center", color: "var(--muted-fg)" }}>
+            正在解析文档…
+          </div>
+        )}
+        {!loading && !!note && note.startsWith("解析失败") && (
+          <div style={{ position: "absolute", top: 32, left: 0, right: 0, padding: "0 24px", textAlign: "center", color: "var(--warning)", fontSize: 13 }}>
+            {note}
+          </div>
+        )}
       </div>
     </div>
   );
