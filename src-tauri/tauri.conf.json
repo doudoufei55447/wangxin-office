@@ -32,15 +32,14 @@
     ],
     "shortDescription": "轻量全格式办公文件读改工具",
     "longDescription": "网信科技出品：不到 150MB、秒级启动、无需登录的桌面端轻量工具，能打开任意 Word/Excel/PPT/PDF 做轻量修改与批注。隐私优先，本地处理不上云。",
-    "author": "网信科技",
+    "publisher": "网信科技",
     "copyright": "Copyright © 2026 网信科技",
     "category": "Productivity",
     "windows": {
       "nsis": {
         "displayLanguageSelector": false,
         "languages": ["SimpChinese", "English"],
-        "installMode": "perMachine",
-        "allowToChangeInstallationDirectory": true
+        "installMode": "perMachine"
       },
       "wix": {
         "language": "zh-CN"
