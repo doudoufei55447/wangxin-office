@@ -7,6 +7,7 @@ import { DocxViewer } from "./modules/docx/DocxViewer";
 import { XlsxGrid } from "./modules/xlsx/XlsxGrid";
 import { PptxViewer } from "./modules/pptx/PptxViewer";
 import { openFileDialog, type OpenedFile } from "./platform";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 export interface TabItem {
   id: string;
@@ -79,7 +80,9 @@ export default function App() {
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
           <Tabs tabs={tabs} activeId={activeId} onSelect={setActiveId} onClose={closeTab} />
           <main style={{ flex: 1, minHeight: 0, overflow: "hidden", background: "var(--muted)" }}>
-            {activeTab ? <EditorRouter tab={activeTab} key={activeTab.id} /> : <EmptyState onOpen={openFile} />}
+            <ErrorBoundary>
+              {activeTab ? <EditorRouter tab={activeTab} key={activeTab.id} /> : <EmptyState onOpen={openFile} />}
+            </ErrorBoundary>
           </main>
         </div>
       </div>
