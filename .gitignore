@@ -15,3 +15,4 @@ Thumbs.db
 # tauri icon 移动端产物（桌面端不用）
 src-tauri/icons/android/
 src-tauri/icons/ios/
+vite.config.ts.timestamp-*.mjs
