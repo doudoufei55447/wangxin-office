@@ -23,3 +23,6 @@ test-saved.pptx
 pptx-inherit-verify.png
 gen-test-inherit.mjs
 fo-isolation.*
+test-freehand.pdf
+gen-test-pdf.mjs
+pdf-freehand-verify.png

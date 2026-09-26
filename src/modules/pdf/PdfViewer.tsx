@@ -114,7 +114,8 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
       if (modeRef.current === "highlight") {
         const s = drawRef.current;
         drawTemp(page, { type: "highlight", page, x: Math.min(s.startX, p.x), y: Math.min(s.startY, p.y), w: Math.abs(p.x - s.startX), h: Math.abs(p.y - s.startY), color: "#FFE066" });
-      } else if (mode === "freehand") {
+      } else if (modeRef.current === "freehand") {
+        // 必须用 modeRef（bindOverlay 闭包里的 mode 恒为挂载时的 "none"），否则拖拽预览失效
         drawRef.current.points.push(p);
         drawTemp(page, { type: "freehand", page, points: drawRef.current.points, color: "#FF3B30" });
       }
@@ -127,7 +128,10 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
         const w = Math.abs(p.x - s.startX), h = Math.abs(p.y - s.startY);
         if (w > 0.01 && h > 0.01) setAnns((a) => [...a, { type: "highlight", page, x: Math.min(s.startX, p.x), y: Math.min(s.startY, p.y), w, h, color: "#FFE066" }]);
       } else if (modeRef.current === "freehand") {
-        setAnns((a) => [...a, { type: "freehand", page, points: drawRef.current!.points, color: "#FF3B30" }]);
+        // 先同步取值再进 updater：React 18 的 setState updater 延迟到重渲染时才执行，
+        // 若在 updater 内读 drawRef.current，此时下方已置 null → 渲染期抛 null.points（ErrorBoundary 崩溃根因）
+        const pts = drawRef.current.points;
+        setAnns((a) => [...a, { type: "freehand", page, points: pts, color: "#FF3B30" }]);
       }
       drawRef.current = null;
       clearTemp(page);
@@ -201,6 +205,16 @@ export function PdfViewer({ file }: { file: OpenedFile }) {
     anns.forEach((a) => paintAnn(pagesRef.current[a.page]?.canvas.getContext("2d"), a.page, a));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anns, loading]);
+
+  // 工具切换时同步 overlay 光标（overlay 为命令式 DOM，React 不重渲染它们）
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    Array.from(container.children).forEach((wrap) => {
+      const overlay = (wrap as HTMLElement).lastElementChild as HTMLElement | null;
+      if (overlay) overlay.style.cursor = mode === "none" ? "default" : "crosshair";
+    });
+  }, [mode, loading]);
 
   async function handleSave() {
     setSaving(true);
