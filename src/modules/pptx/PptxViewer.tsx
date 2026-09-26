@@ -5,7 +5,7 @@ import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import { InlinePrompt } from "../../components/InlinePrompt";
 import type { OpenedFile } from "../../platform";
 
-interface TableData { colW: number[]; rows: string[][]; }
+interface TableData { colW: number[]; rows: string[][]; cellImgs: (string | null)[][]; }
 interface Shape {
   x: number; y: number; cx: number; cy: number;
   isPic: boolean;
@@ -18,7 +18,7 @@ interface Shape {
   table?: TableData;
   placeholder?: string;
 }
-interface Slide { W: number; H: number; bgColor: string; shapes: Shape[]; runs: string[]; xml: string; }
+interface Slide { W: number; H: number; bgColor: string; bgImg: string; shapes: Shape[]; runs: string[]; xml: string; }
 
 interface Geo { x: number; y: number; cx: number; cy: number; }
 // 子坐标系 → 幻灯片坐标系映射：slide = d + v * s
@@ -28,6 +28,8 @@ const IDENTITY: SpaceMap = { dx: 0, dy: 0, sx: 1, sy: 1 };
 interface ParseCtx {
   zip: JSZip;
   phCache: Map<string, Map<string, Geo>>;
+  imgCache: Map<string, string>;   // zip 媒体路径 → data URL
+  shapeCache: Map<string, Shape[]>; // layout/master 底层装饰形状缓存
   W: number; H: number;
 }
 
@@ -82,6 +84,25 @@ async function partRels(zip: JSZip, partPath: string): Promise<{ byId: Record<st
     if (kind && !byType[kind]) byType[kind] = target;
   });
   return { byId, byType };
+}
+
+// zip 媒体路径 → data URL（带缓存，背景/版式/母版/单元格重复引用同一图只解一次）
+async function mediaDataUrl(ctx: ParseCtx, zipPath: string): Promise<string> {
+  const cached = ctx.imgCache.get(zipPath);
+  if (cached !== undefined) return cached;
+  const ext = (zipPath.split(".").pop() || "png").toLowerCase();
+  const data = await ctx.zip.file(zipPath)?.async("base64");
+  const url = data ? `data:image/${ext};base64,${data}` : "";
+  ctx.imgCache.set(zipPath, url);
+  return url;
+}
+
+// 主题色映射（最常见的两对）：深色背景上 schemeClr bg1 白字若按默认深色渲染会不可见
+const SCHEME_COLORS: Record<string, string> = { bg1: "FFFFFF", lt1: "FFFFFF", tx1: "1A2233", dk1: "1A2233" };
+function schemeColor(ph: Element | null | undefined): string | null {
+  const sc = ph ? getByLocal(ph, "schemeClr")[0] : null;
+  const v = sc?.getAttribute("val") || "";
+  return SCHEME_COLORS[v] ? "#" + SCHEME_COLORS[v] : null;
 }
 
 function phKey(ph: Element): string {
@@ -144,12 +165,13 @@ async function walkContainer(
   relById: Record<string, string>,
   layoutMap: Map<string, Geo>,
   shapes: Shape[],
-  runs: string[]
+  runs: string[],
+  skipPh = false
 ) {
   for (const child of Array.from(container.children)) {
     const tag = child.localName;
     if (tag === "sp" || tag === "pic") {
-      await walkShape(ctx, child, tag === "pic", g, relById, layoutMap, shapes, runs);
+      await walkShape(ctx, child, tag === "pic", g, relById, layoutMap, shapes, runs, skipPh);
     } else if (tag === "grpSp") {
       const grpSpPr = getByLocal(child, "grpSpPr")[0];
       const xfrm = grpSpPr ? getByLocal(grpSpPr, "xfrm")[0] : null;
@@ -173,9 +195,9 @@ async function walkContainer(
           };
         }
       }
-      await walkContainer(ctx, child, cg, relById, layoutMap, shapes, runs);
+      await walkContainer(ctx, child, cg, relById, layoutMap, shapes, runs, skipPh);
     } else if (tag === "graphicFrame") {
-      await walkFrame(ctx, child, g, layoutMap, shapes, runs);
+      await walkFrame(ctx, child, g, relById, layoutMap, shapes, runs, skipPh);
     }
   }
 }
@@ -200,8 +222,11 @@ async function walkShape(
   relById: Record<string, string>,
   layoutMap: Map<string, Geo>,
   shapes: Shape[],
-  runs: string[]
+  runs: string[],
+  skipPh = false
 ) {
+  const phEl = getByLocal(sp, "ph")[0];
+  if (skipPh && phEl) return; // 版式/母版底层：占位符提示文本不渲染（对应放映语义）
   const spPr = getByLocal(sp, "spPr")[0];
   const xfrm = spPr ? getByLocal(spPr, "xfrm")[0] : null;
   let geo: Geo | null = null;
@@ -209,8 +234,7 @@ async function walkShape(
     geo = xfrmToGeo(xfrm, g);
   } else {
     // 占位符无自身坐标 → 从 layout/master 继承（占位符几何在幻灯片坐标系，不再套组合映射）
-    const ph = getByLocal(sp, "ph")[0];
-    if (ph) geo = lookupPh(layoutMap, phKey(ph));
+    if (phEl) geo = lookupPh(layoutMap, phKey(phEl));
   }
 
   let lines: string[] = [];
@@ -237,6 +261,10 @@ async function walkShape(
           if (rPr.getAttribute("b") === "1") bold = true;
           const sf = getByLocal(rPr, "srgbClr")[0];
           if (sf) color = "#" + sf.getAttribute("val")!;
+          else {
+            const sc = schemeColor(rPr);
+            if (sc) color = sc;
+          }
         }
         const pPr = getByLocal(p, "pPr")[0];
         if (pPr) {
@@ -255,12 +283,7 @@ async function walkShape(
   if (isPic) {
     const blip = getByLocal(sp, "blip")[0];
     const rid = blip?.getAttribute("r:embed");
-    if (rid && relById[rid]) {
-      const mediaPath = relById[rid];
-      const data = await ctx.zip.file(mediaPath)?.async("base64");
-      const ext = mediaPath.split(".").pop() || "png";
-      if (data) img = `data:image/${ext};base64,${data}`;
-    }
+    if (rid && relById[rid]) img = await mediaDataUrl(ctx, relById[rid]);
   }
 
   if (!geo) return; // 无法定位的形状不渲染，但 runs 已收录（面板可改、保存可写回）
@@ -271,17 +294,20 @@ async function walkFrame(
   ctx: ParseCtx,
   frame: Element,
   g: SpaceMap,
+  relById: Record<string, string>,
   layoutMap: Map<string, Geo>,
   shapes: Shape[],
-  runs: string[]
+  runs: string[],
+  skipPh = false
 ) {
+  const phEl = getByLocal(frame, "ph")[0];
+  if (skipPh && phEl) return;
   const xfrm = getByLocal(frame, "xfrm")[0]; // graphicFrame 用 p:xfrm
   let geo: Geo | null = null;
   if (xfrm) {
     geo = xfrmToGeo(xfrm, g);
   } else {
-    const ph = getByLocal(frame, "ph")[0];
-    if (ph) geo = lookupPh(layoutMap, phKey(ph));
+    if (phEl) geo = lookupPh(layoutMap, phKey(phEl));
   }
   if (!geo) return;
 
@@ -289,8 +315,10 @@ async function walkFrame(
   if (tbl) {
     const colW = getByLocal(tbl, "gridCol").map((c) => num(c, "w"));
     const rows: string[][] = [];
+    const cellImgs: (string | null)[][] = [];
     for (const tr of getByLocal(tbl, "tr")) {
       const row: string[] = [];
+      const imgRow: (string | null)[] = [];
       for (const tc of getByLocal(tr, "tc")) {
         const txBody = getByLocal(tc, "txBody")[0];
         const parts: string[] = [];
@@ -305,14 +333,62 @@ async function walkFrame(
         }
         for (const t of getByLocal(tc, "t")) runs.push(t.textContent || "");
         row.push(parts.join("\n"));
+        // 单元格图片填充（a:tcPr > a:blipFill，常见于照片拼贴版式）
+        const tcPr = getByLocal(tc, "tcPr")[0];
+        const blip = tcPr ? getByLocal(tcPr, "blip")[0] : null;
+        const rid = blip?.getAttribute("r:embed");
+        imgRow.push(rid && relById[rid] ? await mediaDataUrl(ctx, relById[rid]) : null);
       }
       rows.push(row);
+      cellImgs.push(imgRow);
     }
-    shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1400, bold: false, align: "left", img: "", table: { colW, rows } });
+    shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1400, bold: false, align: "left", img: "", table: { colW, rows, cellImgs } });
   } else {
     // 图表 / SmartArt 等复杂对象：位置正确、内容给出占位提示而非静默丢失
     shapes.push({ ...geo, isPic: false, lines: [], color: "#8a6d1a", fontSize: 1400, bold: false, align: "center", img: "", placeholder: "图表 / SmartArt 等复杂对象暂不支持预览" });
   }
+}
+
+// part（slide/layout/master）的 p:bg 背景：图片 blipFill 优先，其次纯色
+async function bgFor(ctx: ParseCtx, partPath: string): Promise<{ color?: string; img?: string } | null> {
+  const xml = await ctx.zip.file(partPath)?.async("string");
+  if (!xml) return null;
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const bg = getByLocal(doc, "bg")[0];
+  if (!bg) return null;
+  const blip = getByLocal(bg, "blip")[0];
+  const rid = blip?.getAttribute("r:embed");
+  if (rid) {
+    const rels = await partRels(ctx.zip, partPath);
+    if (rels.byId[rid]) return { img: await mediaDataUrl(ctx, rels.byId[rid]) };
+  }
+  const sf = getByLocal(bg, "srgbClr")[0];
+  if (sf) return { color: "#" + sf.getAttribute("val")! };
+  return null;
+}
+
+// 版式/母版 spTree 中的非占位符装饰形状（背景大图、装饰元素），渲染在幻灯片内容之下。
+// runs 用独立数组丢弃——编辑面板只列幻灯片自身文本。
+async function underlayShapes(ctx: ParseCtx, partPath: string, depth: number): Promise<Shape[]> {
+  if (!partPath || depth > 1) return [];
+  const cached = ctx.shapeCache.get(partPath);
+  if (cached) return cached;
+  ctx.shapeCache.set(partPath, []); // 先占位防循环引用
+  const xml = await ctx.zip.file(partPath)?.async("string");
+  if (!xml) return [];
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const rels = await partRels(ctx.zip, partPath);
+  const shapes: Shape[] = [];
+  const runs: string[] = [];
+  // 母版形状在版式形状之下
+  if (depth === 0 && rels.byType["slideMaster"]) {
+    shapes.push(...(await underlayShapes(ctx, rels.byType["slideMaster"], depth + 1)));
+  }
+  const cSld = getByLocal(doc, "cSld")[0];
+  const spTree = cSld ? getByLocal(cSld, "spTree")[0] : null;
+  if (spTree) await walkContainer(ctx, spTree, IDENTITY, rels.byId, new Map(), shapes, runs, true);
+  ctx.shapeCache.set(partPath, shapes);
+  return shapes;
 }
 
 async function parseSlide(ctx: ParseCtx, name: string): Promise<Slide> {
@@ -322,25 +398,31 @@ async function parseSlide(ctx: ParseCtx, name: string): Promise<Slide> {
   // 版面尺寸来自 presentation.xml 的 sldSz（ctx 中已读取）；背景色仍在 slide 内
   const doc = new DOMParser().parseFromString(xml, "application/xml");
 
-  // 占位符几何：layout → master 两级继承（按 slide rels 找到 layout）
+  const layoutPath = rels.byType["slideLayout"] || "";
+  const masterPath = layoutPath ? (await partRels(ctx.zip, layoutPath)).byType["slideMaster"] || "" : "";
+
+  // 占位符几何：layout → master 两级继承
   let layoutMap = new Map<string, Geo>();
-  if (rels.byType["slideLayout"]) {
-    layoutMap = await phMapFor(ctx, rels.byType["slideLayout"], true);
+  if (layoutPath) {
+    layoutMap = await phMapFor(ctx, layoutPath, true);
   }
 
-  const shapes: Shape[] = [];
+  // 背景链：slide → layout → master（纯色或图片）
+  let bgColor = "#FFFFFF";
+  let bgImg = "";
+  const bg = (await bgFor(ctx, name)) || (layoutPath ? await bgFor(ctx, layoutPath) : null) || (masterPath ? await bgFor(ctx, masterPath) : null);
+  if (bg?.img) bgImg = bg.img;
+  else if (bg?.color) bgColor = bg.color;
+
+  // 版式/母版底层装饰（非占位符形状）+ 幻灯片自身形状
+  const underlay = layoutPath ? await underlayShapes(ctx, layoutPath, 0) : [];
+  const shapes: Shape[] = [...underlay];
   const runs: string[] = [];
   const cSld = getByLocal(doc, "cSld")[0];
   const spTree = cSld ? getByLocal(cSld, "spTree")[0] : null;
   if (spTree) await walkContainer(ctx, spTree, IDENTITY, rels.byId, layoutMap, shapes, runs);
 
-  let bgColor = "#FFFFFF";
-  const bg = getByLocal(doc, "bg")[0];
-  if (bg) {
-    const sf = getByLocal(bg, "srgbClr")[0];
-    if (sf) bgColor = "#" + sf.getAttribute("val")!;
-  }
-  return { W: ctx.W, H: ctx.H, bgColor, shapes, runs, xml };
+  return { W: ctx.W, H: ctx.H, bgColor, bgImg, shapes, runs, xml };
 }
 
 export function PptxViewer({ file }: { file: OpenedFile }) {
@@ -376,7 +458,7 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
             H = num(s, "cy", H);
           }
         }
-        const ctx: ParseCtx = { zip, phCache: new Map(), W, H };
+        const ctx: ParseCtx = { zip, phCache: new Map(), imgCache: new Map(), shapeCache: new Map(), W, H };
 
         const names = Object.keys(zip.files)
           .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
@@ -385,7 +467,7 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
         for (const n of names) parsed.push(await parseSlide(ctx, n));
         setSlides(parsed);
       } catch (e) {
-        setSlides([{ W: 12192000, H: 6858000, bgColor: "#fff", shapes: [], runs: ["解析失败：" + (e as Error).message], xml: "" }]);
+        setSlides([{ W: 12192000, H: 6858000, bgColor: "#fff", bgImg: "", shapes: [], runs: ["解析失败：" + (e as Error).message], xml: "" }]);
       } finally {
         setLoading(false);
       }
@@ -462,6 +544,8 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
             {loading && <div style={{ padding: 24, color: "var(--muted-fg)" }}>正在解析演示文稿…</div>}
             {slide && (
               <svg viewBox={`0 0 ${slide.W / PT} ${slide.H / PT}`} style={{ width: "100%", display: "block", background: slide.bgColor }}>
+                {/* 背景：slide/layout/master 的 blipFill 满版底图 */}
+                {slide.bgImg && <image x={0} y={0} width={slide.W / PT} height={slide.H / PT} href={slide.bgImg} preserveAspectRatio="none" />}
                 {slide.shapes.map((s, i) => {
                   // 形状几何换算为 pt 单位；字号 sz（百分点数）→ pt
                   const gx = s.x / PT, gy = s.y / PT, gw = s.cx / PT, gh = s.cy / PT;
@@ -490,6 +574,11 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
                         const cell = s.table.rows[r][c] || "";
                         const cellLines = cell.split("\n");
                         const cellBaseline = gy + r * rowH + rowH / 2 - (cellLines.length * lineH) / 2 + size * 0.85;
+                        // 单元格图片填充（照片拼贴版式）
+                        const cimg = s.table.cellImgs[r]?.[c];
+                        if (cimg) {
+                          texts.push(<image key={`ci${r}-${c}`} x={colX} y={gy + r * rowH} width={w} height={rowH} href={cimg} preserveAspectRatio="none" />);
+                        }
                         texts.push(
                           <text key={`t${r}-${c}`} x={colX + w * 0.03} y={cellBaseline} fill={s.color} fontSize={size} fontFamily="PingFang SC, Microsoft YaHei, sans-serif">
                             {cellLines.map((ln, j) => (

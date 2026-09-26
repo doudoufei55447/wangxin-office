@@ -26,3 +26,6 @@ fo-isolation.*
 test-freehand.pdf
 gen-test-pdf.mjs
 pdf-freehand-verify.png
+test-fidelity.pptx
+gen-test-fidelity.mjs
+pptx-fidelity-verify.png
