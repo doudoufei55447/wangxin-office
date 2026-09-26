@@ -22,28 +22,6 @@ export function Toolbar({
         flexShrink: 0,
       }}
     >
-      {/* 品牌字标：WX 蓝色渐变 */}
-      <div
-        style={{
-          width: 28,
-          height: 28,
-          borderRadius: 7,
-          background: "linear-gradient(135deg, #2E4FE8, #45C8F0)",
-          color: "#fff",
-          fontWeight: 800,
-          fontSize: 13,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          letterSpacing: "-0.5px",
-        }}
-        title="网信科技"
-      >
-        WX
-      </div>
-      <span style={{ fontWeight: 700, fontSize: 14 }}>网信办公</span>
-      <span style={{ color: "var(--muted-fg)", fontSize: 12 }}>轻量全格式读改</span>
-
       <div style={{ flex: 1 }} />
 
       <button className="btn" onClick={onOpen}>
