@@ -5,7 +5,8 @@ import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import { InlinePrompt } from "../../components/InlinePrompt";
 import type { OpenedFile } from "../../platform";
 
-interface TableData { colW: number[]; rows: string[][]; cellImgs: (string | null)[][]; }
+interface CellStyle { fill: string | null; img: string | null; sz: number | null; align: "left" | "center" | "right" | null; color: string | null; }
+interface TableData { colW: number[]; rows: string[][]; cells: CellStyle[][]; rowHs: number[]; }
 interface Shape {
   x: number; y: number; cx: number; cy: number;
   isPic: boolean;
@@ -14,7 +15,9 @@ interface Shape {
   fontSize: number; // sz (hundredths of point)
   bold: boolean;
   align: "left" | "center" | "right";
-  img: string;
+  img: string;      // 图片内容（pic）或 spPr blipFill 图片填充
+  fill: string | null; // spPr solidFill/gradFill 首色（色块底）
+  rounded: boolean;    // prstGeom roundRect
   table?: TableData;
   placeholder?: string;
 }
@@ -30,6 +33,8 @@ interface ParseCtx {
   phCache: Map<string, Map<string, Geo>>;
   imgCache: Map<string, string>;   // zip 媒体路径 → data URL
   shapeCache: Map<string, Shape[]>; // layout/master 底层装饰形状缓存
+  themeMap: Record<string, string> | null; // theme1.xml clrScheme
+  clrMap: Record<string, string> | null;   // master p:clrMap
   W: number; H: number;
 }
 
@@ -97,12 +102,87 @@ async function mediaDataUrl(ctx: ParseCtx, zipPath: string): Promise<string> {
   return url;
 }
 
-// 主题色映射（最常见的两对）：深色背景上 schemeClr bg1 白字若按默认深色渲染会不可见
-const SCHEME_COLORS: Record<string, string> = { bg1: "FFFFFF", lt1: "FFFFFF", tx1: "1A2233", dk1: "1A2233" };
-function schemeColor(ph: Element | null | undefined): string | null {
-  const sc = ph ? getByLocal(ph, "schemeClr")[0] : null;
-  const v = sc?.getAttribute("val") || "";
-  return SCHEME_COLORS[v] ? "#" + SCHEME_COLORS[v] : null;
+// 主题色兜底映射（theme1.xml 缺失时）。值必须带 # 前缀，与 srgbClr/schemeResolve 路径保持一致
+const SCHEME_COLORS: Record<string, string> = { bg1: "#FFFFFF", lt1: "#FFFFFF", tx1: "#1A2233", dk1: "#1A2233" };
+
+// 解析 master clrMap + theme1.xml clrScheme，构建 schemeClr → 色值 解析器
+async function loadTheme(ctx: ParseCtx, masterPath: string) {
+  if (ctx.themeMap || !masterPath) return;
+  const clrMap: Record<string, string> = {};
+  const masterXml = await ctx.zip.file(masterPath)?.async("string");
+  if (masterXml) {
+    const md = new DOMParser().parseFromString(masterXml, "application/xml");
+    const cm = getByLocal(md, "clrMap")[0];
+    if (cm) {
+      for (const a of ["bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"]) {
+        const v = cm.getAttribute(a);
+        if (v) clrMap[a] = v;
+      }
+    }
+  }
+  const themeMap: Record<string, string> = {};
+  const rels = await partRels(ctx.zip, masterPath);
+  const themePath = rels.byType["theme"];
+  if (themePath) {
+    const txml = await ctx.zip.file(themePath)?.async("string");
+    if (txml) {
+      const td = new DOMParser().parseFromString(txml, "application/xml");
+      const cs = getByLocal(td, "clrScheme")[0];
+      if (cs) {
+        for (const child of Array.from(cs.children)) {
+          const srgb = getByLocal(child, "srgbClr")[0];
+          const sys = getByLocal(child, "sysClr")[0];
+          const v = srgb?.getAttribute("val") || sys?.getAttribute("lastClr");
+          if (v) themeMap[child.localName] = v.toUpperCase();
+        }
+      }
+    }
+  }
+  ctx.clrMap = clrMap;
+  ctx.themeMap = themeMap;
+}
+
+function schemeResolve(ctx: ParseCtx, val: string): string | null {
+  const mapped = ctx.clrMap?.[val] || val;
+  const t = ctx.themeMap?.[mapped];
+  return t ? "#" + t : null;
+}
+
+// 填充/颜色容器内取色：srgbClr > sysClr(lastClr) > schemeClr(主题解析)
+function colorFromFill(ctx: ParseCtx, parent: Element): string | null {
+  const srgb = getByLocal(parent, "srgbClr")[0];
+  if (srgb?.getAttribute("val")) return "#" + srgb.getAttribute("val")!.toUpperCase();
+  const sys = getByLocal(parent, "sysClr")[0];
+  if (sys) {
+    const l = sys.getAttribute("lastClr");
+    if (l) return "#" + l.toUpperCase();
+  }
+  const sc = getByLocal(parent, "schemeClr")[0];
+  if (sc) {
+    const v = sc.getAttribute("val") || "";
+    return schemeResolve(ctx, v) || SCHEME_COLORS[v] || null;
+  }
+  return null;
+}
+
+// spPr/tcPr 直接子级填充：solidFill/gradFill(取首 stop)/blipFill(图片填充)/noFill。
+// 只扫直接子级——a:ln 里的 solidFill 是线条色，不能误当形状填充。
+async function fillFromProps(ctx: ParseCtx, pr: Element, relById: Record<string, string>): Promise<{ fill: string | null; img: string | null }> {
+  for (const child of Array.from(pr.children)) {
+    const t = child.localName;
+    if (t === "solidFill") return { fill: colorFromFill(ctx, child), img: null };
+    if (t === "gradFill") {
+      const gs = getByLocal(child, "gs")[0];
+      return { fill: gs ? colorFromFill(ctx, gs) : null, img: null };
+    }
+    if (t === "blipFill") {
+      const blip = getByLocal(child, "blip")[0];
+      const rid = blip?.getAttribute("r:embed");
+      return { fill: null, img: rid && relById[rid] ? await mediaDataUrl(ctx, relById[rid]) : null };
+    }
+    if (t === "noFill") return { fill: null, img: null };
+  }
+  return { fill: null, img: null };
 }
 
 function phKey(ph: Element): string {
@@ -259,11 +339,10 @@ async function walkShape(
           const sz = rPr.getAttribute("sz");
           if (sz) fontSize = +sz;
           if (rPr.getAttribute("b") === "1") bold = true;
-          const sf = getByLocal(rPr, "srgbClr")[0];
-          if (sf) color = "#" + sf.getAttribute("val")!;
-          else {
-            const sc = schemeColor(rPr);
-            if (sc) color = sc;
+          const sf = getByLocal(rPr, "solidFill")[0];
+          if (sf) {
+            const c = colorFromFill(ctx, sf);
+            if (c) color = c;
           }
         }
         const pPr = getByLocal(p, "pPr")[0];
@@ -280,14 +359,23 @@ async function walkShape(
   }
 
   let img = "";
+  let fill: string | null = null;
+  let rounded = false;
   if (isPic) {
     const blip = getByLocal(sp, "blip")[0];
     const rid = blip?.getAttribute("r:embed");
     if (rid && relById[rid]) img = await mediaDataUrl(ctx, relById[rid]);
+  } else if (spPr) {
+    // 形状填充：solidFill/gradFill 色块底、blipFill 图片填充（常见于满版背景矩形）
+    const pf = await fillFromProps(ctx, spPr, relById);
+    fill = pf.fill;
+    img = pf.img || "";
+    const prst = getByLocal(spPr, "prstGeom")[0]?.getAttribute("prst");
+    rounded = prst === "roundRect";
   }
 
   if (!geo) return; // 无法定位的形状不渲染，但 runs 已收录（面板可改、保存可写回）
-  shapes.push({ ...geo, isPic, lines, color, fontSize, bold, align, img });
+  shapes.push({ ...geo, isPic, lines, color, fontSize, bold, align, img, fill, rounded });
 }
 
 async function walkFrame(
@@ -315,13 +403,18 @@ async function walkFrame(
   if (tbl) {
     const colW = getByLocal(tbl, "gridCol").map((c) => num(c, "w"));
     const rows: string[][] = [];
-    const cellImgs: (string | null)[][] = [];
+    const cells: CellStyle[][] = [];
+    const rowHs: number[] = [];
     for (const tr of getByLocal(tbl, "tr")) {
+      rowHs.push(num(tr, "h", 0));
       const row: string[] = [];
-      const imgRow: (string | null)[] = [];
+      const rowCells: CellStyle[] = [];
       for (const tc of getByLocal(tr, "tc")) {
         const txBody = getByLocal(tc, "txBody")[0];
         const parts: string[] = [];
+        let sz: number | null = null;
+        let align: CellStyle["align"] = null;
+        let color: string | null = null;
         if (txBody) {
           for (const p of getByLocal(txBody, "p")) {
             parts.push(
@@ -330,26 +423,42 @@ async function walkFrame(
                 .join("")
             );
           }
+          // 单元格字号/对齐/颜色取首段首 run（WPS/Office 常见写法）
+          const p0 = getByLocal(txBody, "p")[0];
+          if (p0) {
+            const pPr = getByLocal(p0, "pPr")[0];
+            const a = pPr?.getAttribute("algn");
+            if (a === "ctr") align = "center";
+            else if (a === "r") align = "right";
+            else if (a === "l") align = "left";
+            const rPr = getByLocal(p0, "rPr")[0];
+            if (rPr) {
+              const szv = rPr.getAttribute("sz");
+              if (szv) sz = +szv;
+              // 单元格文字色（深色表头上的白字等）
+              const sf = getByLocal(rPr, "solidFill")[0];
+              if (sf) { const cc = colorFromFill(ctx, sf); if (cc) color = cc; }
+            }
+          }
         }
         for (const t of getByLocal(tc, "t")) runs.push(t.textContent || "");
         row.push(parts.join("\n"));
-        // 单元格图片填充（a:tcPr > a:blipFill，常见于照片拼贴版式）
+        // 单元格样式：blipFill 图片 / solidFill・gradFill 色块（照片拼贴与深色表头）
         const tcPr = getByLocal(tc, "tcPr")[0];
-        const blip = tcPr ? getByLocal(tcPr, "blip")[0] : null;
-        const rid = blip?.getAttribute("r:embed");
-        imgRow.push(rid && relById[rid] ? await mediaDataUrl(ctx, relById[rid]) : null);
+        const st = tcPr ? await fillFromProps(ctx, tcPr, relById) : { fill: null, img: null };
+        rowCells.push({ fill: st.fill, img: st.img, sz, align, color });
       }
       rows.push(row);
-      cellImgs.push(imgRow);
+      cells.push(rowCells);
     }
-    shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1400, bold: false, align: "left", img: "", table: { colW, rows, cellImgs } });
+    shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1400, bold: false, align: "left", img: "", fill: null, rounded: false, table: { colW, rows, cells, rowHs } });
   } else {
     // 图表 / SmartArt 等复杂对象：位置正确、内容给出占位提示而非静默丢失
-    shapes.push({ ...geo, isPic: false, lines: [], color: "#8a6d1a", fontSize: 1400, bold: false, align: "center", img: "", placeholder: "图表 / SmartArt 等复杂对象暂不支持预览" });
+    shapes.push({ ...geo, isPic: false, lines: [], color: "#8a6d1a", fontSize: 1400, bold: false, align: "center", img: "", fill: null, rounded: false, placeholder: "图表 / SmartArt 等复杂对象暂不支持预览" });
   }
 }
 
-// part（slide/layout/master）的 p:bg 背景：图片 blipFill 优先，其次纯色
+// part（slide/layout/master）的 p:bg 背景：图片 blipFill 优先，其次渐变首 stop / 纯色 / bgRef 主题色
 async function bgFor(ctx: ParseCtx, partPath: string): Promise<{ color?: string; img?: string } | null> {
   const xml = await ctx.zip.file(partPath)?.async("string");
   if (!xml) return null;
@@ -362,8 +471,22 @@ async function bgFor(ctx: ParseCtx, partPath: string): Promise<{ color?: string;
     const rels = await partRels(ctx.zip, partPath);
     if (rels.byId[rid]) return { img: await mediaDataUrl(ctx, rels.byId[rid]) };
   }
-  const sf = getByLocal(bg, "srgbClr")[0];
-  if (sf) return { color: "#" + sf.getAttribute("val")! };
+  const solid = getByLocal(bg, "solidFill")[0];
+  if (solid) {
+    const c = colorFromFill(ctx, solid);
+    if (c) return { color: c };
+  }
+  const grad = getByLocal(bg, "gradFill")[0];
+  if (grad) {
+    const gs = getByLocal(grad, "gs")[0];
+    const c = gs ? colorFromFill(ctx, gs) : null;
+    if (c) return { color: c };
+  }
+  const bgRef = getByLocal(bg, "bgRef")[0];
+  if (bgRef) {
+    const c = colorFromFill(ctx, bgRef);
+    if (c) return { color: c };
+  }
   return null;
 }
 
@@ -400,6 +523,9 @@ async function parseSlide(ctx: ParseCtx, name: string): Promise<Slide> {
 
   const layoutPath = rels.byType["slideLayout"] || "";
   const masterPath = layoutPath ? (await partRels(ctx.zip, layoutPath)).byType["slideMaster"] || "" : "";
+
+  // 主题色解析（schemeClr → 实际色值），一次加载全文件复用
+  await loadTheme(ctx, masterPath);
 
   // 占位符几何：layout → master 两级继承
   let layoutMap = new Map<string, Geo>();
@@ -458,7 +584,7 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
             H = num(s, "cy", H);
           }
         }
-        const ctx: ParseCtx = { zip, phCache: new Map(), imgCache: new Map(), shapeCache: new Map(), W, H };
+        const ctx: ParseCtx = { zip, phCache: new Map(), imgCache: new Map(), shapeCache: new Map(), themeMap: null, clrMap: null, W, H };
 
         const names = Object.keys(zip.files)
           .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
@@ -559,48 +685,77 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
                     return <image key={i} x={gx} y={gy} width={gw} height={gh} href={s.img} preserveAspectRatio="none" />;
                   }
                   if (s.table) {
-                    const nCols = s.table.rows[0]?.length || 0;
-                    const sumW = s.table.colW.reduce((a, b) => a + b, 0);
-                    const rowH = gh / (s.table.rows.length || 1);
-                    let colX = gx;
-                    const rects: React.ReactNode[] = [];
-                    const texts: React.ReactNode[] = [];
+                    const tbl = s.table;
+                    const nCols = tbl.rows[0]?.length || 0;
+                    const sumW = tbl.colW.reduce((a, b) => a + b, 0);
+                    const sumH = tbl.rowHs.reduce((a, b) => a + b, 0);
+                    const nz = tbl.rowHs.filter((h) => h > 0).length || 1;
+                    const avgH = sumH > 0 ? sumH / nz : 0;
+                    const rowPx: number[] = [];
+                    if (sumH > 0) {
+                      for (let r = 0; r < tbl.rows.length; r++) {
+                        const h = (tbl.rowHs[r] || 0) > 0 ? tbl.rowHs[r] : avgH;
+                        rowPx.push((h / sumH) * gh);
+                      }
+                    } else {
+                      for (let r = 0; r < tbl.rows.length; r++) rowPx.push(gh / tbl.rows.length);
+                    }
+                    const rowY: number[] = [];
+                    let yacc = gy;
+                    for (let r = 0; r < tbl.rows.length; r++) { rowY.push(yacc); yacc += rowPx[r]; }
+                    const colWpx: number[] = [];
                     for (let c = 0; c < nCols; c++) {
-                      const w = sumW > 0 ? (gw * (s.table.colW[c] || 0)) / sumW : gw / nCols;
-                      rects.push(
-                        <rect key={`r${c}`} x={colX} y={gy} width={w} height={gh} fill="none" stroke="#808080" strokeOpacity={0.55} strokeWidth={1} />
-                      );
-                      for (let r = 0; r < s.table.rows.length; r++) {
-                        const cell = s.table.rows[r][c] || "";
-                        const cellLines = cell.split("\n");
-                        const cellBaseline = gy + r * rowH + rowH / 2 - (cellLines.length * lineH) / 2 + size * 0.85;
-                        // 单元格图片填充（照片拼贴版式）
-                        const cimg = s.table.cellImgs[r]?.[c];
-                        if (cimg) {
-                          texts.push(<image key={`ci${r}-${c}`} x={colX} y={gy + r * rowH} width={w} height={rowH} href={cimg} preserveAspectRatio="none" />);
+                      colWpx.push(sumW > 0 ? (gw * (tbl.colW[c] || 0)) / sumW : gw / nCols);
+                    }
+                    const fillRects: React.ReactNode[] = [];
+                    const lines: React.ReactNode[] = [];
+                    const texts: React.ReactNode[] = [];
+                    let colX = gx;
+                    for (let c = 0; c < nCols; c++) {
+                      const w = colWpx[c];
+                      for (let r = 0; r < tbl.rows.length; r++) {
+                        const cell = tbl.cells[r]?.[c];
+                        const cy = rowY[r];
+                        const rh = rowPx[r];
+                        // 单元格底色（深色表头等色块）
+                        if (cell?.fill) {
+                          fillRects.push(<rect key={`cf${r}-${c}`} x={colX} y={cy} width={w} height={rh} fill={cell.fill} />);
                         }
-                        texts.push(
-                          <text key={`t${r}-${c}`} x={colX + w * 0.03} y={cellBaseline} fill={s.color} fontSize={size} fontFamily="PingFang SC, Microsoft YaHei, sans-serif">
-                            {cellLines.map((ln, j) => (
-                              <tspan key={j} x={colX + w * 0.03} dy={j === 0 ? 0 : lineH}>{ln || " "}</tspan>
-                            ))}
-                          </text>
-                        );
+                        // 单元格图片填充（照片拼贴版式）
+                        if (cell?.img) {
+                          texts.push(<image key={`ci${r}-${c}`} x={colX} y={cy} width={w} height={rh} href={cell.img} preserveAspectRatio="none" />);
+                        }
+                        const cellText = tbl.rows[r][c] || "";
+                        const cellLines = cellText.split("\n");
+                        const csize = cell?.sz ? cell.sz / 100 : size;
+                        const clineH = csize * LINE_H;
+                        const canchor = cell?.align || s.align;
+                        const canchorX = canchor === "center" ? colX + w / 2 : canchor === "right" ? colX + w * 0.98 : colX + w * 0.03;
+                        const canchorAttr = canchor === "center" ? "middle" : canchor === "right" ? "end" : "start";
+                        const cbaseline = cy + rh / 2 - (cellLines.length * clineH) / 2 + csize * 0.85;
+                        if (cellText.trim() || cell?.img) {
+                          texts.push(
+                            <text key={`t${r}-${c}`} x={canchorX} y={cbaseline} fill={cell?.color || s.color} fontSize={csize} textAnchor={canchorAttr} fontFamily="PingFang SC, Microsoft YaHei, sans-serif">
+                              {cellLines.map((ln, j) => (
+                                <tspan key={j} x={canchorX} dy={j === 0 ? 0 : clineH}>{ln || " "}</tspan>
+                              ))}
+                            </text>
+                          );
+                        }
                       }
                       colX += w;
                     }
-                    // 行分隔线
-                    for (let r = 1; r < s.table.rows.length; r++) {
-                      rects.push(
-                        <line key={`h${r}`} x1={gx} y1={gy + r * rowH} x2={gx + gw} y2={gy + r * rowH} stroke="#808080" strokeOpacity={0.55} strokeWidth={1} />
-                      );
+                    // 表格外框 + 列/行分隔线（画在底色与文字之上，保证边框清晰）
+                    lines.push(<rect key="outer" x={gx} y={gy} width={gw} height={gh} fill="none" stroke="#808080" strokeOpacity={0.55} strokeWidth={1} />);
+                    for (let c = 1; c < nCols; c++) {
+                      let xacc = gx;
+                      for (let k = 0; k < c; k++) xacc += colWpx[k];
+                      lines.push(<line key={`v${c}`} x1={xacc} y1={gy} x2={xacc} y2={gy + gh} stroke="#808080" strokeOpacity={0.55} strokeWidth={1} />);
                     }
-                    return (
-                      <g key={i}>
-                        {rects}
-                        {texts}
-                      </g>
-                    );
+                    for (let r = 1; r < tbl.rows.length; r++) {
+                      lines.push(<line key={`h${r}`} x1={gx} y1={rowY[r]} x2={gx + gw} y2={rowY[r]} stroke="#808080" strokeOpacity={0.55} strokeWidth={1} />);
+                    }
+                    return (<g key={i}>{fillRects}{lines}{texts}</g>);
                   }
                   if (s.placeholder) {
                     return (
@@ -612,21 +767,31 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
                       </g>
                     );
                   }
+                  // 普通形状：先渲填充（色块或图片），再叠文字
+                  const shapeFillRect = s.fill ? (
+                    <rect key={`fr${i}`} x={gx} y={gy} width={gw} height={gh} fill={s.fill} rx={s.rounded ? Math.min(gw, gh) * 0.06 : 0} />
+                  ) : null;
+                  const shapeFillImg = s.img ? (
+                    <image key={`fi${i}`} x={gx} y={gy} width={gw} height={gh} href={s.img} preserveAspectRatio="none" />
+                  ) : null;
                   return (
-                    <text
-                      key={i}
-                      x={anchorX}
-                      y={firstBaseline}
-                      fill={s.color}
-                      fontSize={size}
-                      fontWeight={s.bold ? 700 : 400}
-                      textAnchor={anchor}
-                      fontFamily="PingFang SC, Microsoft YaHei, sans-serif"
-                    >
-                      {s.lines.map((ln, j) => (
-                        <tspan key={j} x={anchorX} dy={j === 0 ? 0 : lineH}>{ln || " "}</tspan>
-                      ))}
-                    </text>
+                    <g key={i}>
+                      {shapeFillRect}
+                      {shapeFillImg}
+                      <text
+                        x={anchorX}
+                        y={firstBaseline}
+                        fill={s.color}
+                        fontSize={size}
+                        fontWeight={s.bold ? 700 : 400}
+                        textAnchor={anchor}
+                        fontFamily="PingFang SC, Microsoft YaHei, sans-serif"
+                      >
+                        {s.lines.map((ln, j) => (
+                          <tspan key={j} x={anchorX} dy={j === 0 ? 0 : lineH}>{ln || " "}</tspan>
+                        ))}
+                      </text>
+                    </g>
                   );
                 })}
               </svg>
