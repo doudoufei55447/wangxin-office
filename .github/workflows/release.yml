@@ -1,0 +1,51 @@
+name: Release Installers
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    name: Windows (msi + nsis)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install NSIS
+        run: choco install nsis -y
+      - name: Install deps
+        run: npm install
+      - name: Generate icon set
+        run: npx tauri icon src-tauri/icons/icon.png
+      - name: Build installers
+        run: npm run tauri build
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installers
+          path: src-tauri/target/release/bundle/**
+
+  macos:
+    name: macOS (dmg + app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install deps
+        run: npm install
+      - name: Generate icon set
+        run: npx tauri icon src-tauri/icons/icon.png
+      - name: Build installers
+        run: npm run tauri build
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-installers
+          path: src-tauri/target/release/bundle/**

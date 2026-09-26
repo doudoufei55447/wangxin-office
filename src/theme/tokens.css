@@ -1,0 +1,103 @@
+:root {
+  /* ===== 浅色主题（默认） ===== */
+  --bg: #F7F9FC;
+  --card: #FFFFFF;
+  --fg: #1A2233;
+  --muted: #EEF2F8;
+  --muted-fg: #5B6678;
+  --border: #E2E8F1;
+  --primary: #2E5BF0;
+  --primary-hover: #1E48D6;
+  --primary-active: #173BB5;
+  --accent: #45C8F0;
+  --on-primary: #FFFFFF;
+  --destructive: #E5484D;
+  --success: #16A34A;
+  --warning: #E8A33D;
+  --ring: rgba(46, 91, 240, 0.35);
+
+  --font-sans: "Plus Jakarta Sans", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 8px 24px rgba(16, 24, 40, 0.12);
+  --transition: 150ms ease;
+}
+
+[data-theme="dark"] {
+  --bg: #0E1320;
+  --card: #161D2E;
+  --fg: #E8EDF5;
+  --muted: #1C2436;
+  --muted-fg: #8A95A8;
+  --border: #283146;
+  --primary: #4D7BF7;
+  --primary-hover: #5F8AF8;
+  --primary-active: #3E6BE6;
+  --accent: #5FD0F2;
+  --on-primary: #FFFFFF;
+  --destructive: #F2555A;
+  --success: #2DBC5E;
+  --warning: #F0B454;
+  --ring: rgba(77, 123, 247, 0.4);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  color: var(--muted-fg);
+  transition: var(--transition);
+}
+.icon-btn:hover { background: var(--muted); color: var(--fg); }
+.icon-btn.active { background: var(--primary); color: var(--on-primary); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  background: var(--muted);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  transition: var(--transition);
+}
+.btn:hover { background: var(--border); }
+.btn.primary { background: var(--primary); color: var(--on-primary); }
+.btn.primary:hover { background: var(--primary-hover); }
+.btn.danger { background: var(--destructive); color: #fff; }
+
+.separator { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }

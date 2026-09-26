@@ -1,0 +1,13 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+.npmcache/
+
+# 日志与系统
+*.log
+.DS_Store
+Thumbs.db
+
+# 临时
+*.tgz
