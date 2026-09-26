@@ -11,3 +11,7 @@ Thumbs.db
 
 # 临时
 *.tgz
+
+# tauri icon 移动端产物（桌面端不用）
+src-tauri/icons/android/
+src-tauri/icons/ios/
