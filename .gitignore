@@ -16,3 +16,10 @@ Thumbs.db
 src-tauri/icons/android/
 src-tauri/icons/ios/
 vite.config.ts.timestamp-*.mjs
+
+# PPTX 回归测试产物（可由 gen-test-inherit.mjs 重新生成）
+test-inherit.pptx
+test-saved.pptx
+pptx-inherit-verify.png
+gen-test-inherit.mjs
+fo-isolation.*
