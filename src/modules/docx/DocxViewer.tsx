@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, Packer, HeadingLevel } from "docx";
 import { Save, FileWarning } from "lucide-react";
-import { saveFileDialog } from "../../platform";
+import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import type { OpenedFile } from "../../platform";
 
 export function DocxViewer({ file }: { file: OpenedFile }) {
@@ -16,6 +16,12 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
     (async () => {
       setLoading(true);
       try {
+        if (isLegacyBinaryFormat(file.buffer)) {
+          setNote(
+            "这是旧版 Word 97-2003 二进制格式（.doc）或 WPS 以 docx 后缀保存的旧格式，本版本暂不支持。请用 Word/WPS 打开后「另存为 .docx」再打开（旧版 .doc 引擎计划二期支持）。"
+          );
+          return;
+        }
         const { value, messages } = await mammoth.convertToHtml({ arrayBuffer: file.buffer.slice(0) });
         if (editorRef.current) {
           editorRef.current.innerHTML = value;

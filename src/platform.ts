@@ -49,3 +49,13 @@ export async function saveFileDialog(defaultName: string, data: Uint8Array | Blo
   // 延迟回收，避免部分浏览器下载未触发就被 revoke
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
+
+// 旧版 Office 二进制容器（OLE Compound File：.doc/.xls/.ppt 及 WPS 以 docx 后缀保存的旧格式）魔数。
+// OOXML（docx/xlsx/pptx）本质是 zip，开头为 PK\x03\x04，不会被此处命中。
+const OLE_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+export function isLegacyBinaryFormat(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < 8) return false;
+  const head = new Uint8Array(buffer, 0, 8);
+  return OLE_MAGIC.every((b, i) => head[i] === b);
+}

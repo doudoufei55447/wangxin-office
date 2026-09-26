@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { Save, MessageSquare, ChevronLeft, ChevronRight, AlertTriangle, Image as ImageIcon } from "lucide-react";
-import { saveFileDialog } from "../../platform";
+import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import type { OpenedFile } from "../../platform";
 
 interface Shape {
@@ -40,7 +40,8 @@ async function parseSlide(zip: JSZip, name: string): Promise<Slide> {
   const relsXml = (await zip.file(relName)?.async("string")) || "<Relationships/>";
   const relDoc = new DOMParser().parseFromString(relsXml, "application/xml");
   const relMap: Record<string, string> = {};
-  relDoc.getElementsByTagName("Relationship").forEach((r) => {
+  // 注意：XML 文档上 getElementsByTagName 返回 HTMLCollection（无 forEach），必须先转数组
+  Array.from(relDoc.getElementsByTagName("Relationship")).forEach((r) => {
     relMap[r.getAttribute("Id") || ""] = r.getAttribute("Target") || "";
   });
 
@@ -150,6 +151,11 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
     (async () => {
       setLoading(true);
       try {
+        if (isLegacyBinaryFormat(file.buffer)) {
+          throw new Error(
+            "这是旧版 PowerPoint 97-2003 二进制格式（.ppt）或 WPS 以 pptx 后缀保存的旧格式，本版本暂不支持。请用 PowerPoint/WPS 打开后「另存为 .pptx」再打开。"
+          );
+        }
         const zip = await JSZip.loadAsync(new Uint8Array(file.buffer.slice(0)));
         zipRef.current = zip;
         const names = Object.keys(zip.files)
