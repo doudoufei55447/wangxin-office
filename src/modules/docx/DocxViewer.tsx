@@ -3,6 +3,7 @@ import mammoth from "mammoth";
 import { Document, Paragraph, TextRun, Packer, HeadingLevel } from "docx";
 import { Save, FileWarning } from "lucide-react";
 import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
+import { extractDocParagraphs } from "./docText";
 import type { OpenedFile } from "../../platform";
 
 export function DocxViewer({ file }: { file: OpenedFile }) {
@@ -17,9 +18,28 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
       setLoading(true);
       try {
         if (isLegacyBinaryFormat(file.buffer)) {
-          setNote(
-            "解析失败：这是旧版 Word 97-2003 二进制格式（.doc）或 WPS 以 docx 后缀保存的旧格式，本版本暂不支持。请用 Word/WPS 打开后「另存为 .docx」再打开（旧版 .doc 引擎计划二期支持）。"
-          );
+          // 旧版 Word 97-2003 二进制（.doc / WPS 旧格式）：文字级提取（FIB → CLX 分片表），
+          // 保文字不保排版，渲染为段落进 contentEditable，可编辑并复用「另存为 docx」。
+          try {
+            const paras = extractDocParagraphs(file.buffer);
+            if (editorRef.current) {
+              editorRef.current.innerHTML = "";
+              for (const p of paras) {
+                const el = document.createElement("p");
+                el.textContent = p || "\u00a0"; // 空段用 nbsp 占位，避免编辑时被合并
+                editorRef.current.appendChild(el);
+              }
+            }
+            setNote(
+              ".doc 旧版格式：已按纯文本读取（保文字、不保排版），可直接编辑后「另存为 docx」。"
+            );
+          } catch (e) {
+            setNote(
+              "解析失败：旧版 Word 97-2003 二进制格式（.doc）读取失败（" +
+                (e as Error).message +
+                "）。请用 Word/WPS 打开后「另存为 .docx」再打开。"
+            );
+          }
           return;
         }
         const { value, messages } = await mammoth.convertToHtml({ arrayBuffer: file.buffer.slice(0) });
@@ -54,7 +74,9 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
     try {
       const doc = htmlToDocx(editorRef.current);
       const blob = await Packer.toBlob(doc);
-      await saveFileDialog(file.name, blob);
+      // 输出恒为 docx 格式：.doc 旧文件另存时自动换成 .docx 后缀，避免产生「doc 后缀实为 zip」的坏文件
+      const outName = file.name.replace(/\.(doc|docx)$/i, "") + ".docx";
+      await saveFileDialog(outName, blob);
     } finally {
       setSaving(false);
     }
