@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import JSZip from "jszip";
 import { Save, MessageSquare, ChevronLeft, ChevronRight, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
+import { extractPptSlides } from "./pptText";
 import { InlinePrompt } from "../../components/InlinePrompt";
 import type { OpenedFile } from "../../platform";
 
@@ -557,6 +558,7 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
   const [notes, setNotes] = useState<{ page: number; x: number; y: number; text: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [legacy, setLegacy] = useState(false);
   const [notePrompt, setNotePrompt] = useState<null | { x: number; y: number; nx: number; ny: number }>(null);
   const zipRef = useRef<JSZip | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -564,11 +566,40 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
   useEffect(() => {
     (async () => {
       setLoading(true);
+      setLegacy(false);
+      setPage(0);
       try {
         if (isLegacyBinaryFormat(file.buffer)) {
-          throw new Error(
-            "这是旧版 PowerPoint 97-2003 二进制格式（.ppt）或 WPS 以 pptx 后缀保存的旧格式，本版本暂不支持。请用 PowerPoint/WPS 打开后「另存为 .pptx」再打开。"
+          // 旧版 PowerPoint 97-2003 二进制（.ppt / WPS 旧格式）：文字级提取（persist 目录定页序），
+          // 每页渲染为居中文本块（保文字、不保排版），仅查看不支持写回。
+          const { W, H, slides: slideTexts } = extractPptSlides(file.buffer);
+          const wrap = (paras: string[]) => {
+            const lines: string[] = [];
+            for (const p of paras) {
+              if (p.length <= 46) lines.push(p);
+              else for (let i = 0; i < p.length; i += 46) lines.push(p.slice(i, i + 46));
+            }
+            return lines;
+          };
+          setSlides(
+            slideTexts.map((paras) => {
+              const lines = wrap(paras);
+              return {
+                W, H, bgColor: "#FFFFFF", bgImg: "",
+                shapes: lines.length
+                  ? [{
+                      x: 457200, y: 457200, cx: W - 914400, cy: H - 914400,
+                      isPic: false, lines, color: "#1A2233",
+                      fontSize: lines.length > 20 ? 1400 : 1800, bold: false, align: "left",
+                      img: "", fill: null, rounded: false,
+                    }]
+                  : [],
+                runs: [], xml: "",
+              };
+            })
           );
+          setLegacy(true);
+          return;
         }
         const zip = await JSZip.loadAsync(new Uint8Array(file.buffer.slice(0)));
         zipRef.current = zip;
@@ -648,12 +679,15 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 12px", background: "var(--card)", borderBottom: "1px solid var(--border)" }}>
-        <button className="btn primary" disabled={saving} onClick={handleSave}>
+        <button className="btn primary" disabled={saving || legacy} title={legacy ? ".ppt 旧格式仅支持文字预览，不支持写回保存" : undefined} onClick={handleSave}>
           <Save size={16} /> {saving ? "保存中…" : "保存文本修改"}
         </button>
         <button className="icon-btn" title="批注" onClick={addNote as any}><MessageSquare size={18} /></button>
         <span style={{ display: "flex", gap: 4, alignItems: "center", fontSize: 12, color: "var(--warning)" }}>
-          <AlertTriangle size={14} /> 查看+改字保排版（纯前端，不改布局）
+          <AlertTriangle size={14} />
+          {legacy
+            ? ".ppt 旧版格式：纯文本预览（保文字、不保排版）；如需编辑请用 WPS/PowerPoint 另存为 .pptx 后打开"
+            : "查看+改字保排版（纯前端，不改布局）"}
         </span>
         <div style={{ flex: 1 }} />
         <button className="icon-btn" onClick={() => setPage((p) => Math.max(0, p - 1))}><ChevronLeft size={18} /></button>
