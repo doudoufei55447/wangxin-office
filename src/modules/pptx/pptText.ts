@@ -8,7 +8,7 @@ import * as XLSX from "xlsx";
 
 const RT_SLIDE = 1006;
 const RT_DOCUMENT = 1000;
-const RT_DOCUMENT_ATOM = 1001; // body 前 8 字节 = slideSizeX/slideSizeY (EMU)
+const RT_DOCUMENT_ATOM = 1001; // body 前 8 字节 = 版面尺寸，单位「磅×8」（720pt 4:3 → 5760×4320），需换算 EMU
 const RT_SLIDE_LIST = 4026;
 const RT_SLIDE_PERSIST = 4057;
 const RT_TEXTCHARS = 4000; // UTF-16LE
@@ -97,11 +97,19 @@ export function extractPptSlides(buffer: ArrayBuffer): { W: number; H: number; s
   if (doc) {
     const inners: Rec[] = [];
     scanRecords(buf, doc.body, doc.body + doc.len, inners);
-    // 幻灯片版面尺寸来自 DocumentAtom(1001)（EMU）
+    // 幻灯片版面尺寸来自 DocumentAtom(1001)。实测单位是「磅×8」而非 EMU
+    // （4:3 → 5760×4320，16:9 老版式 → 5760×3240），必须 ×12700/8 换算 EMU，
+    // 否则渲染层 viewBox 退化为亚像素导致整页空白。做单位探测兼容直接写 EMU 的写入方。
     const docAtom = inners.find((r) => r.type === RT_DOCUMENT_ATOM);
     if (docAtom && docAtom.len >= 8) {
-      W = u32(buf, docAtom.body);
-      H = u32(buf, docAtom.body + 4);
+      let w = u32(buf, docAtom.body);
+      let h = u32(buf, docAtom.body + 4);
+      if (w > 0 && h > 0 && w < 100000) {
+        w = Math.round((w * 12700) / 8);
+        h = Math.round((h * 12700) / 8);
+      }
+      W = w;
+      H = h;
     }
     for (const list of inners) {
       if (list.type !== RT_SLIDE_LIST) continue;

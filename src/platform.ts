@@ -38,7 +38,7 @@ export async function openFileDialog(): Promise<OpenedFile | null> {
 }
 
 export async function saveFileDialog(defaultName: string, data: Uint8Array | Blob): Promise<void> {
-  const blob = data instanceof Blob ? data : new Blob([data]);
+  const blob = data instanceof Blob ? data : new Blob([new Uint8Array(data)]);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

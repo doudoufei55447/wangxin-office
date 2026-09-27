@@ -137,7 +137,7 @@ function htmlToDocx(root: HTMLElement): Document {
         if (["p", "h1", "h2", "h3", "h4", "li", "div"].includes(tag)) {
           const text = el.textContent?.trim() || "";
           if (!text) return;
-          let heading: HeadingLevel | undefined;
+          let heading: (typeof HeadingLevel)[keyof typeof HeadingLevel] | undefined;
           if (tag === "h1") heading = HeadingLevel.HEADING_1;
           else if (tag === "h2") heading = HeadingLevel.HEADING_2;
           else if (tag === "h3") heading = HeadingLevel.HEADING_3;
