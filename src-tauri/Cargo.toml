@@ -1,6 +1,6 @@
 [package]
 name = "wangxin-office"
-version = "1.0.1"
+version = "1.0.2"
 description = "网信办公 · 轻量全格式办公文件读改工具"
 authors = ["网信科技"]
 edition = "2021"

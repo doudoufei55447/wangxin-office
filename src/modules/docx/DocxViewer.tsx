@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import mammoth from "mammoth";
-import { Document, Paragraph, TextRun, Packer, HeadingLevel } from "docx";
+import { Document, Paragraph, TextRun, Packer, HeadingLevel, Table, TableRow, TableCell } from "docx";
 import { Save, FileWarning } from "lucide-react";
 import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import { extractDocParagraphs } from "./docText";
+import type { DocBlock } from "./docText";
 import type { OpenedFile } from "../../platform";
 
 export function DocxViewer({ file }: { file: OpenedFile }) {
@@ -21,17 +22,21 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
           // 旧版 Word 97-2003 二进制（.doc / WPS 旧格式）：文字级提取（FIB → CLX 分片表），
           // 保文字不保排版，渲染为段落进 contentEditable，可编辑并复用「另存为 docx」。
           try {
-            const paras = extractDocParagraphs(file.buffer);
+            const blocks: DocBlock[] = extractDocParagraphs(file.buffer);
             if (editorRef.current) {
               editorRef.current.innerHTML = "";
-              for (const p of paras) {
-                const el = document.createElement("p");
-                el.textContent = p || "\u00a0"; // 空段用 nbsp 占位，避免编辑时被合并
-                editorRef.current.appendChild(el);
+              for (const blk of blocks) {
+                if (blk.type === "p") {
+                  const el = document.createElement("p");
+                  el.textContent = blk.text || "\u00a0"; // 空段用 nbsp 占位，避免编辑时被合并
+                  editorRef.current.appendChild(el);
+                } else {
+                  editorRef.current.appendChild(buildTableEl(blk.rows));
+                }
               }
             }
             setNote(
-              ".doc 旧版格式：已按纯文本读取（保文字、不保排版），可直接编辑后「另存为 docx」。"
+              ".doc 旧版格式：已按纯文本 + 表格读取（保文字、不保排版），可直接编辑后「另存为 docx」。"
             );
           } catch (e) {
             setNote(
@@ -126,29 +131,84 @@ export function DocxViewer({ file }: { file: OpenedFile }) {
   );
 }
 
-// 轻量 HTML→docx：仅提取段落/标题/列表文本（MVP 范围，复杂排版不保真）
+// 在 contentEditable 容器内渲染表格（保网格，便于预览与编辑）
+function buildTableEl(rows: string[][]): HTMLTableElement {
+  const table = document.createElement("table");
+  table.setAttribute(
+    "style",
+    "border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;table-layout:fixed;"
+  );
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    for (const c of r) {
+      const td = document.createElement("td");
+      td.setAttribute(
+        "style",
+        "border:1px solid #d0d5dd;padding:6px 10px;vertical-align:top;word-break:break-word;"
+      );
+      td.textContent = c || "\u00a0";
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+  return table;
+}
+
+// 轻量 HTML→docx：提取段落/标题/表格文本（MVP 范围，复杂排版不保真）
 function htmlToDocx(root: HTMLElement): Document {
-  const paras: Paragraph[] = [];
+  const blocks: (Paragraph | Table)[] = [];
+  const pushPara = (text: string, heading?: (typeof HeadingLevel)[keyof typeof HeadingLevel]) => {
+    const t = text.trim();
+    if (!t) return;
+    blocks.push(new Paragraph({ text: t, heading, spacing: { after: 120 } }));
+  };
+  const handleTable = (tbl: HTMLTableElement) => {
+    const rows: TableRow[] = [];
+    tbl.querySelectorAll("tr").forEach((tr) => {
+      const cells: TableCell[] = [];
+      tr.querySelectorAll("td,th").forEach((td) => {
+        const t = (td.textContent || "").replace(/ /g, " ").trim();
+        cells.push(new TableCell({ children: [new Paragraph(t || " ")] }));
+      });
+      if (cells.length) rows.push(new TableRow({ children: cells }));
+    });
+    if (rows.length) blocks.push(new Table({ rows }));
+  };
   const walk = (node: Node) => {
     node.childNodes.forEach((child) => {
-      if (child.nodeType === Node.ELEMENT_NODE) {
-        const el = child as HTMLElement;
-        const tag = el.tagName.toLowerCase();
-        if (["p", "h1", "h2", "h3", "h4", "li", "div"].includes(tag)) {
-          const text = el.textContent?.trim() || "";
-          if (!text) return;
-          let heading: (typeof HeadingLevel)[keyof typeof HeadingLevel] | undefined;
-          if (tag === "h1") heading = HeadingLevel.HEADING_1;
-          else if (tag === "h2") heading = HeadingLevel.HEADING_2;
-          else if (tag === "h3") heading = HeadingLevel.HEADING_3;
-          paras.push(new Paragraph({ text, heading, spacing: { after: 120 } }));
-        } else {
-          walk(child);
-        }
+      if (child.nodeType !== Node.ELEMENT_NODE) return;
+      const el = child as HTMLElement;
+      const tag = el.tagName.toLowerCase();
+      if (tag === "table") {
+        handleTable(el as HTMLTableElement);
+        return;
       }
+      if (["p", "h1", "h2", "h3", "h4", "li"].includes(tag)) {
+        let heading: (typeof HeadingLevel)[keyof typeof HeadingLevel] | undefined;
+        if (tag === "h1") heading = HeadingLevel.HEADING_1;
+        else if (tag === "h2") heading = HeadingLevel.HEADING_2;
+        else if (tag === "h3") heading = HeadingLevel.HEADING_3;
+        pushPara(el.textContent || "", heading);
+        return;
+      }
+      if (tag === "div") {
+        // 含块级子元素（表格/段落）则递归，否则按段落处理
+        const hasBlock = Array.from(el.children).some((c) =>
+          ["p", "table", "div", "h1", "h2", "h3", "h4", "li"].includes(
+            (c as HTMLElement).tagName.toLowerCase()
+          )
+        );
+        if (hasBlock) {
+          walk(el);
+          return;
+        }
+        pushPara(el.textContent || "");
+        return;
+      }
+      walk(el);
     });
   };
   walk(root);
-  if (paras.length === 0) paras.push(new Paragraph({ children: [new TextRun("（空文档）")] }));
-  return new Document({ sections: [{ children: paras }] });
+  if (blocks.length === 0) blocks.push(new Paragraph({ children: [new TextRun("（空文档）")] }));
+  return new Document({ sections: [{ children: blocks }] });
 }
