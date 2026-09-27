@@ -3,6 +3,8 @@ import JSZip from "jszip";
 import { Save, MessageSquare, ChevronLeft, ChevronRight, AlertTriangle, Image as ImageIcon } from "lucide-react";
 import { saveFileDialog, isLegacyBinaryFormat } from "../../platform";
 import { extractPptSlides } from "./pptText";
+import { parseChartXml, parseDiagramText } from "./graphicData";
+import type { ChartData } from "./graphicData";
 import { InlinePrompt } from "../../components/InlinePrompt";
 import type { OpenedFile } from "../../platform";
 
@@ -28,6 +30,31 @@ interface Geo { x: number; y: number; cx: number; cy: number; }
 // 子坐标系 → 幻灯片坐标系映射：slide = d + v * s
 interface SpaceMap { dx: number; dy: number; sx: number; sy: number; }
 const IDENTITY: SpaceMap = { dx: 0, dy: 0, sx: 1, sy: 1 };
+
+// 图表缓存数据 → 数据表格（复用既有表格渲染：保内容，不绘制原生图形）
+function chartToTable(c: ChartData): TableData {
+  const nSeries = c.series.length;
+  const nCols = 1 + nSeries;
+  const colW = Array.from({ length: nCols }, () => 100);
+  const rows: string[][] = [];
+  const cells: CellStyle[][] = [];
+  if (c.title) {
+    const r = new Array(nCols).fill("");
+    r[0] = c.title;
+    rows.push(r);
+    cells.push(r.map((_, i): CellStyle => ({ fill: "#E8EEFF", img: null, sz: 1100, align: i === 0 ? "left" : "center", color: null })));
+  }
+  const header = ["类别", ...c.series.map((s, j) => s.name || `系列${j + 1}`)];
+  rows.push(header);
+  cells.push(header.map((): CellStyle => ({ fill: "#2E5BF0", img: null, sz: 1000, align: "center", color: "#FFFFFF" })));
+  const n = Math.max(c.cats.length, ...c.series.map((s) => s.vals.length));
+  for (let i = 0; i < n; i++) {
+    const row = [c.cats[i] ?? String(i + 1), ...c.series.map((s) => (Number.isFinite(s.vals[i]) ? String(s.vals[i]) : ""))];
+    rows.push(row);
+    cells.push(row.map((_, k): CellStyle => ({ fill: null, img: null, sz: null, align: k === 0 ? "left" : "center", color: null })));
+  }
+  return { colW, rows, cells, rowHs: [] };
+}
 
 interface ParseCtx {
   zip: JSZip;
@@ -454,7 +481,30 @@ async function walkFrame(
     }
     shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1400, bold: false, align: "left", img: "", fill: null, rounded: false, table: { colW, rows, cells, rowHs } });
   } else {
-    // 图表 / SmartArt 等复杂对象：位置正确、内容给出占位提示而非静默丢失
+    // 图表（c:chart）：解析缓存数据 → 数据表格呈现，避免只显示「暂不支持」
+    const chartRef = getByLocal(frame, "chart")[0];
+    const chartRid = chartRef?.getAttribute("r:id");
+    let chartData: ChartData | null = null;
+    if (chartRid && relById[chartRid]) {
+      const cxml = await ctx.zip.file(relById[chartRid])?.async("string");
+      if (cxml) chartData = parseChartXml(cxml);
+    }
+    if (chartData) {
+      shapes.push({ ...geo, isPic: false, lines: [], color: "#1A2233", fontSize: 1200, bold: false, align: "left", img: "", fill: null, rounded: false, table: chartToTable(chartData) });
+      return;
+    }
+    // SmartArt（dgm:diagram）：从 data 部件取节点文本，作为文本块呈现
+    const relIds = getByLocal(frame, "relIds")[0];
+    const dm = relIds?.getAttribute("r:dm");
+    if (dm && relById[dm]) {
+      const dxml = await ctx.zip.file(relById[dm])?.async("string");
+      const lines = dxml ? parseDiagramText(dxml) : [];
+      if (lines.length) {
+        shapes.push({ ...geo, isPic: false, lines, color: "#1A2233", fontSize: 1200, bold: false, align: "left", img: "", fill: null, rounded: false });
+        return;
+      }
+    }
+    // 仍未支持（如 OLE 对象）：位置正确、给出占位提示而非静默丢失
     shapes.push({ ...geo, isPic: false, lines: [], color: "#8a6d1a", fontSize: 1400, bold: false, align: "center", img: "", fill: null, rounded: false, placeholder: "图表 / SmartArt 等复杂对象暂不支持预览" });
   }
 }
