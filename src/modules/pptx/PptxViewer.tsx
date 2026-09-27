@@ -18,6 +18,7 @@ interface Shape {
   fontSize: number; // sz (hundredths of point)
   bold: boolean;
   align: "left" | "center" | "right";
+  anchor?: "t" | "ctr" | "b"; // bodyPr 垂直锚点（缺省按 ctr 处理，保持既有观感）
   img: string;      // 图片内容（pic）或 spPr blipFill 图片填充
   fill: string | null; // spPr solidFill/gradFill 首色（色块底）
   rounded: boolean;    // prstGeom roundRect
@@ -217,6 +218,100 @@ function phKey(ph: Element): string {
   return (ph.getAttribute("type") || "body") + "#" + (ph.getAttribute("idx") || "");
 }
 
+const LINE_H_RATIO = 1.25; // 与渲染处 LINE_H 保持一致
+// 中文排版禁则：这些标点不允许出现在行首 / 行尾
+const NO_LINE_START = "）」』】》〉、。，．！？：；…·ー々ぁぃぅぇぉっゃゅょゎ%‰℃)]}>,.!?;:";
+const NO_LINE_END = "（「『【《〈([{<";
+
+let _measCtx: CanvasRenderingContext2D | null | undefined;
+function measCtx(): CanvasRenderingContext2D | null {
+  if (_measCtx !== undefined) return _measCtx;
+  try {
+    _measCtx = (document.createElement("canvas").getContext("2d") as CanvasRenderingContext2D) || null;
+  } catch {
+    _measCtx = null;
+  }
+  return _measCtx;
+}
+const _wCache = new Map<string, number>();
+/** 文本宽度（pt）。优先用 canvas 实测（中英混排比字符估算准得多），无 canvas 时退回估算 */
+function textWidth(s: string, sizePt: number, bold: boolean): number {
+  const key = (bold ? "b" : "n") + "|" + sizePt.toFixed(2) + "|" + s;
+  const hit = _wCache.get(key);
+  if (hit !== undefined) return hit;
+  const ctx = measCtx();
+  let w = 0;
+  if (ctx) {
+    ctx.font = `${bold ? "bold " : ""}${sizePt}pt "PingFang SC","Microsoft YaHei",sans-serif`;
+    w = ctx.measureText(s).width * 0.75; // canvas 量得的是 CSS px，1pt = 4/3 px
+  } else {
+    let em = 0;
+    for (const ch of s) em += (ch.codePointAt(0) || 0) >= 0x2e80 ? 1 : 0.56;
+    w = em * sizePt;
+  }
+  if (_wCache.size > 30000) _wCache.clear();
+  _wCache.set(key, w);
+  return w;
+}
+
+/** 按容器宽换行，带行首/行尾禁则（避免「）」孤悬行首） */
+function wrapText(text: string, maxW: number, sizePt: number, bold = false): string[] {
+  const out: string[] = [];
+  for (const para of text.split("\n")) {
+    if (!para) {
+      out.push("");
+      continue;
+    }
+    let cur = "";
+    let curW = 0;
+    for (const ch of para) {
+      const w = textWidth(ch, sizePt, bold);
+      if (cur && curW + w > maxW) {
+        const last = cur.slice(-1);
+        if (cur.length > 1 && (NO_LINE_START.includes(ch) || NO_LINE_END.includes(last))) {
+          // 把 cur 末字符一起挪到下一行，避免标点孤悬
+          out.push(cur.slice(0, -1));
+          cur = last + ch;
+        } else {
+          out.push(cur);
+          cur = ch;
+        }
+        curW = textWidth(cur, sizePt, bold);
+      } else {
+        cur += ch;
+        curW += w;
+      }
+    }
+    out.push(cur);
+  }
+  return out;
+}
+
+/**
+ * 换行 + 高度自适应：换行后总高若超出容器，按比例收缩字号（下限原字号 60%）。
+ * 解决「单元格/色块内换行 → 垂直溢出压到相邻行」的回归（第 12 页表格曾复现）。
+ */
+function layoutText(
+  text: string,
+  maxW: number,
+  maxH: number,
+  sizePt: number,
+  bold: boolean,
+  noWrap: boolean,
+): { lines: string[]; size: number } {
+  if (noWrap || !text.trim()) return { lines: text.split("\n"), size: sizePt };
+  let size = sizePt;
+  let lines = wrapText(text, maxW, size, bold);
+  let guard = 0;
+  while (maxH > 0 && lines.length * size * LINE_H_RATIO > maxH && guard++ < 12) {
+    const next = size * 0.92;
+    if (next < sizePt * 0.6) break;
+    size = next;
+    lines = wrapText(text, maxW, size, bold);
+  }
+  return { lines, size };
+}
+
 function lookupPh(map: Map<string, Geo> | undefined, key: string): Geo | null {
   if (!map) return null;
   const [t, idx] = key.split("#");
@@ -350,6 +445,10 @@ async function walkShape(
   let fontSize = 1800;
   let bold = false;
   let align: "left" | "center" | "right" = "left";
+  let anchor: "t" | "ctr" | "b" = "ctr";
+  let noWrap = false;
+  let insetLR = 2 * 91440; // lIns + rIns（EMU），Office 默认各 91440
+  let insetTB = 2 * 45720; // tIns + bIns（EMU），Office 默认各 45720
 
   const txBody = getByLocal(sp, "txBody")[0];
   if (txBody) {
@@ -384,6 +483,24 @@ async function walkShape(
     }
     // runs 按文档顺序逐个 a:t 收集（与保存写回一一对应）
     for (const t of getByLocal(txBody, "t")) runs.push(t.textContent || "");
+    // bodyPr：垂直锚点 / normAutofit 自动缩放 / 是否换行 / 左右内边距
+    const bodyPr = getByLocal(txBody, "bodyPr")[0];
+    if (bodyPr) {
+      const a = bodyPr.getAttribute("anchor");
+      if (a === "t" || a === "ctr" || a === "b") anchor = a;
+      const af = getByLocal(bodyPr, "normAutofit")[0];
+      if (af) {
+        const fs = +(af.getAttribute("fontScale") || 100000) / 100000;
+        if (fs > 0 && fs !== 1) fontSize = Math.round(fontSize * fs);
+      }
+      if (bodyPr.getAttribute("wrap") === "none") noWrap = true;
+      const l = bodyPr.getAttribute("lIns");
+      const r = bodyPr.getAttribute("rIns");
+      insetLR = (l ? +l : 91440) + (r ? +r : 91440);
+      const t = bodyPr.getAttribute("tIns");
+      const b = bodyPr.getAttribute("bIns");
+      insetTB = (t ? +t : 45720) + (b ? +b : 45720);
+    }
   }
 
   let img = "";
@@ -403,7 +520,25 @@ async function walkShape(
   }
 
   if (!geo) return; // 无法定位的形状不渲染，但 runs 已收录（面板可改、保存可写回）
-  shapes.push({ ...geo, isPic, lines, color, fontSize, bold, align, img, fill, rounded });
+  // 文本在形状宽度内换行（避免长段落溢出色块/文本框边界）；字号已按 normAutofit 缩放
+  const sizePt = fontSize / 100;
+  // geo.cx / geo.cy 为 EMU；12700 EMU = 1pt。减去内边距后得到可用文字宽/高
+  const availW = Math.max(sizePt * 2, geo.cx / 12700 - insetLR / 12700);
+  const availH = Math.max(sizePt * LINE_H_RATIO, geo.cy / 12700 - insetTB / 12700);
+  const laid = layoutText(lines.join("\n"), availW, availH, sizePt, bold, noWrap);
+  shapes.push({
+    ...geo,
+    isPic,
+    lines: laid.lines,
+    color,
+    fontSize: Math.round(laid.size * 100),
+    bold,
+    align,
+    anchor,
+    img,
+    fill,
+    rounded,
+  });
 }
 
 async function walkFrame(
@@ -763,7 +898,14 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
                   const lineH = size * LINE_H;
                   const anchorX = s.align === "center" ? gx + gw / 2 : s.align === "right" ? gx + gw * 0.98 : gx + gw * 0.02;
                   const anchor = s.align === "center" ? "middle" : s.align === "right" ? "end" : "start";
-                  const firstBaseline = gy + gh / 2 - (s.lines.length * lineH) / 2 + size * 0.85;
+                  const anch = s.anchor || "ctr";
+                  const totalTextH = s.lines.length * lineH;
+                  const firstBaseline =
+                    anch === "b"
+                      ? gy + gh - totalTextH + size * 0.85
+                      : anch === "t"
+                      ? gy + size * 0.85 + 3.6
+                      : gy + gh / 2 - totalTextH / 2 + size * 0.85;
 
                   if (s.isPic) {
                     return <image key={i} x={gx} y={gy} width={gw} height={gh} href={s.img} preserveAspectRatio="none" />;
@@ -810,8 +952,11 @@ export function PptxViewer({ file }: { file: OpenedFile }) {
                           texts.push(<image key={`ci${r}-${c}`} x={colX} y={cy} width={w} height={rh} href={cell.img} preserveAspectRatio="none" />);
                         }
                         const cellText = tbl.rows[r][c] || "";
-                        const cellLines = cellText.split("\n");
-                        const csize = cell?.sz ? cell.sz / 100 : size;
+                        const baseSize = cell?.sz ? cell.sz / 100 : size;
+                        // 单元格内换行 + 高度自适应（超出行高就收字号，避免压到相邻行）
+                        const cfit = layoutText(cellText, Math.max(6, w - 8), rh - 3, baseSize, s.bold, false);
+                        const csize = Math.max(5, cfit.size);
+                        const cellLines = cfit.lines;
                         const clineH = csize * LINE_H;
                         const canchor = cell?.align || s.align;
                         const canchorX = canchor === "center" ? colX + w / 2 : canchor === "right" ? colX + w * 0.98 : colX + w * 0.03;
