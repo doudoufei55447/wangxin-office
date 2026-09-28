@@ -47,6 +47,24 @@ npm run tauri build     # 产出 src-tauri/target/release/bundle/dmg
 # 公证：codesign + notarize（参考 Tauri 官方文档）
 ```
 
+#### ⚠️ macOS 首次打开提示「已损坏或不完整」
+未做 Apple Developer ID 签名 + 公证的 `.app`，从网上下载后会带 `com.apple.quarantine`
+隔离标记，Gatekeeper 直接拒绝启动（报「可能已损坏或不完整」，点右键打开也没用）。
+
+**用户侧解除（装好后执行一次即可）：**
+```bash
+xattr -cr "/Applications/网信办公.app"
+```
+图形界面路径：系统设置 → 隐私与安全性 → 底部「网信办公 已被阻止」→ 仍要打开
+（报「已损坏」时此入口可能不出现，终端命令更可靠）。
+
+**根治（需 Apple Developer Program 账号，$99/年）：**
+在 GitHub 仓库 Secrets 配置 `APPLE_CERTIFICATE`（.p12 base64）、
+`APPLE_CERTIFICATE_PASSWORD`、`APPLE_SIGNING_IDENTITY`（Developer ID Application）、
+`APPLE_ID`、`APPLE_PASSWORD`（App 专用密码）、`APPLE_TEAM_ID`，
+Tauri 检测到这些环境变量会自动签名 + 公证，产物即可正常打开。
+
+
 ## 能力与边界（MVP 范围）
 | 格式 | 能力 | 边界 |
 |------|------|------|

@@ -32,6 +32,14 @@ jobs:
   macos:
     name: macOS (dmg + app)
     runs-on: macos-latest
+    env:
+      # 配置了这些 Secrets 才会签名 + 公证；未配置时行为与之前一致（ad-hoc 签名，用户需 xattr -cr 解除隔离）
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -40,10 +48,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install deps
         run: npm install
+      - name: Import signing certificate (optional, needs repo secrets)
+        if: env.APPLE_CERTIFICATE != ''
+        run: |
+          mkdir -p ~/certs
+          echo "$APPLE_CERTIFICATE" | base64 --decode -o ~/certs/cert.p12
+          security create-keychain -p buildpwd build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p buildpwd build.keychain
+          security import ~/certs/cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k buildpwd build.keychain
       - name: Generate icon set
         run: npx tauri icon src-tauri/icons/icon.png
       - name: Build installers
         run: npm run tauri build
+      - name: Attach first-launch note
+        if: env.APPLE_CERTIFICATE == ''
+        run: |
+          cat > src-tauri/target/release/bundle/macOS-首次打开说明.txt <<'EOF'
+        【macOS 首次打开提示"已损坏或不完整"的解决办法】
+
+        本安装包暂未做 Apple 开发者签名与公证，从网上下载后会被 macOS 打上
+        隔离标记，首次打开会被 Gatekeeper 拒绝。这不是文件损坏。
+
+        装好后，在「终端」执行一次（复制整行）：
+            xattr -cr "/Applications/网信办公.app"
+
+        然后正常双击打开即可，只需执行一次。
+        EOF
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
