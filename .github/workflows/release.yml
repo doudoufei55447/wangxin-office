@@ -33,13 +33,12 @@ jobs:
     name: macOS (dmg + app)
     runs-on: macos-latest
     env:
-      # 配置了这些 Secrets 才会签名 + 公证；未配置时行为与之前一致（ad-hoc 签名，用户需 xattr -cr 解除隔离）
+      # 签名 Secrets；公证 Secrets 不放这里——否则 Tauri 会在 build 内部静默公证，卡住时日志全黑箱。
+      # 公证拆到独立步骤（Notarize & staple），notarytool 输出逐行可见。
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      NOTARIZE_ENABLED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -61,7 +60,33 @@ jobs:
       - name: Generate icon set
         run: npx tauri icon src-tauri/icons/icon.png
       - name: Build installers
+        timeout-minutes: 45
         run: npm run tauri build
+      - name: Notarize & staple (observable)
+        if: env.NOTARIZE_ENABLED == 'true' && env.APPLE_SIGNING_IDENTITY != ''
+        timeout-minutes: 40
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          DMGS=(src-tauri/target/release/bundle/dmg/*.dmg)
+          if [ ${#DMGS[@]} -eq 0 ]; then
+            echo "ERROR: no dmg found under bundle/dmg/"
+            exit 1
+          fi
+          for f in "${DMGS[@]}"; do
+            echo "== [1/3] notarytool submit: $f =="
+            xcrun notarytool submit "$f" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+            echo "== [2/3] stapler staple: $f =="
+            xcrun stapler staple "$f"
+            echo "== [3/3] stapler validate: $f =="
+            xcrun stapler validate "$f"
+          done
+          echo "NOTARIZATION COMPLETE"
       - name: Attach first-launch note
         if: env.APPLE_CERTIFICATE == ''
         run: |
