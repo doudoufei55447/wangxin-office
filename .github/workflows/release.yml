@@ -65,17 +65,19 @@ jobs:
       - name: Attach first-launch note
         if: env.APPLE_CERTIFICATE == ''
         run: |
-          cat > src-tauri/target/release/bundle/macOS-首次打开说明.txt <<'EOF'
-        【macOS 首次打开提示"已损坏或不完整"的解决办法】
-
-        本安装包暂未做 Apple 开发者签名与公证，从网上下载后会被 macOS 打上
-        隔离标记，首次打开会被 Gatekeeper 拒绝。这不是文件损坏。
-
-        装好后，在「终端」执行一次（复制整行）：
-            xattr -cr "/Applications/网信办公.app"
-
-        然后正常双击打开即可，只需执行一次。
-        EOF
+          NOTE="src-tauri/target/release/bundle/macOS-首次打开说明.txt"
+          mkdir -p "$(dirname "$NOTE")"
+          {
+            echo '【macOS 首次打开提示"已损坏或不完整"的解决办法】'
+            echo ''
+            echo '本安装包暂未做 Apple 开发者签名与公证，从网上下载后会被 macOS 打上'
+            echo '隔离标记，首次打开会被 Gatekeeper 拒绝。这不是文件损坏。'
+            echo ''
+            echo '装好后，在「终端」执行一次（复制整行）：'
+            echo '    xattr -cr "/Applications/网信办公.app"'
+            echo ''
+            echo '然后正常双击打开即可，只需执行一次。'
+          } > "$NOTE"
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
