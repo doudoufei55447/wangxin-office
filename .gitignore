@@ -33,3 +33,8 @@ pptx-fidelity-verify.png
 test-doc-saved.docx
 doc-verify.png
 ppt-verify.png
+
+# 部署工作区：安装包二进制、服务器回拉备份与截图，不入库
+deploy/_upload/
+deploy/_remote/
+site/preview.png
